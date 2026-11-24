@@ -47,14 +47,44 @@ class SessionStore(context: Context) {
 
     fun current(): Session? = _session.value
 
-    fun update(session: Session) {
-        prefs.edit()
+    /** 用户是否开启「保持登录」（对标原版记住登录态）。 */
+    var keepLoggedIn: Boolean
+        get() = prefs.getBoolean(KEY_KEEP_LOGGED_IN, true)
+        set(value) = prefs.edit().putBoolean(KEY_KEEP_LOGGED_IN, value).apply()
+
+    /** 加密存储的密码 MD5（用于 errorCode=8 时静默自动重连）。 */
+    var savedPasswordMd5: String?
+        get() = prefs.getString(KEY_PASSWORD_MD5, null)
+        set(value) = prefs.edit().putString(KEY_PASSWORD_MD5, value).apply()
+
+    /** 上次向服务端成功调用 user/login/cache/renewal 续期的时间戳。 */
+    var lastRenewalTime: Long
+        get() = prefs.getLong(KEY_LAST_RENEWAL_TIME, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_RENEWAL_TIME, value).apply()
+
+    /** 保存最新手机号（用于重登时快速预填）。 */
+    val lastTelephone: String
+        get() = prefs.getString(KEY_TELEPHONE, "").orEmpty()
+
+    fun update(
+        session: Session,
+        passwordMd5: String? = null,
+        keepLoggedIn: Boolean = this.keepLoggedIn,
+    ) {
+        val editor = prefs.edit()
             .putString(KEY_LOGIN_CODE, session.loginCode)
             .putString(KEY_USER_ID, session.userId)
             .putString(KEY_ACCOUNT_ID, session.accountId)
             .putString(KEY_PROJECT_ID, session.projectId)
             .putString(KEY_TELEPHONE, session.telephone)
-            .apply()
+            .putBoolean(KEY_KEEP_LOGGED_IN, keepLoggedIn)
+
+        if (passwordMd5 != null) {
+            editor.putString(KEY_PASSWORD_MD5, passwordMd5)
+        } else if (!keepLoggedIn) {
+            editor.remove(KEY_PASSWORD_MD5)
+        }
+        editor.apply()
         _session.value = session
     }
 
@@ -70,13 +100,29 @@ class SessionStore(context: Context) {
         _wfwapiLoginCode.value = code
     }
 
-    /** 清会话；[reason] 非空时记录失效原因（如被原版 App 顶掉），供登录页提示。 */
+    /**
+     * 清会话：
+     * - [reason] == null：用户主动退出登录，彻底清除包括密码、会话和保持登录状态的所有凭据；
+     * - [reason] != null：Token 过期/被顶下线，清理当前会话 token，保留密码/手机号以备用户或静默登录重试。
+     */
     fun clear(reason: String? = null) {
-        prefs.edit().clear().apply()
+        val editor = prefs.edit()
+        if (reason == null) {
+            editor.clear()
+        } else {
+            editor.remove(KEY_LOGIN_CODE)
+            editor.remove(KEY_WFWAPI_LOGIN_CODE)
+        }
+        editor.apply()
         kickPrefs.edit().putString(KEY_KICK_REASON, reason).apply()
         _session.value = null
         _wfwapiLoginCode.value = null
         _kickReason.value = reason
+    }
+
+    /** 清除保存的登录凭据（例如密码被服务端修改导致静默登录失败时）。 */
+    fun clearCredentials() {
+        prefs.edit().remove(KEY_PASSWORD_MD5).apply()
     }
 
     /** 清除失效原因提示（重新登录成功后调用）。 */
@@ -110,5 +156,8 @@ class SessionStore(context: Context) {
         const val KEY_TELEPHONE = "telephone"
         const val KEY_WFWAPI_LOGIN_CODE = "wfwapiLoginCode"
         const val KEY_KICK_REASON = "kickReason"
+        const val KEY_KEEP_LOGGED_IN = "keepLoggedIn"
+        const val KEY_PASSWORD_MD5 = "passwordMd5"
+        const val KEY_LAST_RENEWAL_TIME = "lastRenewalTime"
     }
 }

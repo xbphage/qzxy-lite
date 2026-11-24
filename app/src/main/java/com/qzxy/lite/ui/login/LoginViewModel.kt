@@ -22,6 +22,8 @@ data class LoginUiState(
     val countdown: Int = 0,
     /** UI 改版后密码登录是主表单，验证码收为切换路径；纯界面态，不参与数据层。 */
     val smsMode: Boolean = true,
+    /** 保持登录状态（对标原版：自动续期与 Token 失效静默重连）。 */
+    val keepLoggedIn: Boolean = true,
 )
 
 /**
@@ -35,7 +37,12 @@ class LoginViewModel(
     private val sessionStore: SessionStore,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(LoginUiState())
+    private val _state = MutableStateFlow(
+        LoginUiState(
+            telephone = sessionStore.lastTelephone,
+            keepLoggedIn = sessionStore.keepLoggedIn,
+        )
+    )
     val state: StateFlow<LoginUiState> = _state.asStateFlow()
 
     fun onTelephoneChange(v: String) =
@@ -45,6 +52,11 @@ class LoginViewModel(
         _state.update { it.copy(code = v.filter { c -> c.isDigit() }.take(6)) }
 
     fun onPasswordChange(v: String) = _state.update { it.copy(password = v.take(32)) }
+
+    fun onKeepLoggedInChange(v: Boolean) {
+        sessionStore.keepLoggedIn = v
+        _state.update { it.copy(keepLoggedIn = v) }
+    }
 
     /** 密码表单 ⇄ 验证码表单切换（清掉上一次的登录错误提示）。 */
     fun toggleMode() = _state.update { it.copy(smsMode = !it.smsMode, loginState = UiState.Idle) }
@@ -68,14 +80,14 @@ class LoginViewModel(
     fun login(onSuccess: () -> Unit) {
         val s = _state.value
         if (s.telephone.length != 11 || s.code.length < 4) return
-        doLogin({ auth.login(s.telephone, s.code) }, onSuccess)
+        doLogin({ auth.login(s.telephone, s.code, s.keepLoggedIn) }, onSuccess)
     }
 
     /** 密码登录（wfwapi user/login，type=0，password=MD5(明文)）。 */
     fun loginWithPassword(onSuccess: () -> Unit) {
         val s = _state.value
         if (s.telephone.length != 11 || s.password.isBlank()) return
-        doLogin({ auth.passwordLogin(s.telephone, s.password) }, onSuccess)
+        doLogin({ auth.passwordLogin(s.telephone, s.password, s.keepLoggedIn) }, onSuccess)
     }
 
     private fun doLogin(block: suspend () -> Unit, onSuccess: () -> Unit) {

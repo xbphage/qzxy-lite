@@ -17,19 +17,39 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 会话失效拦截器：仅对 v3-api 的响应生效（wfwapi 不认 v3 会话，其 errorCode=8 不应清掉本地会话）。
- * 响应体出现 errorCode=8 时回调 onExpired（清会话 → UI 跳登录）。
+ * 响应体出现 errorCode=8 时：
+ * 1. 若开启了保持登录且有本地凭据，优先进行同步静默登录续期，并无感重新发起本次请求；
+ * 2. 若无法自动恢复，回调 onFinalExpired（清会话 → UI 跳登录）。
  */
 class SessionExpiredInterceptor(
-    private val onExpired: () -> Unit,
+    private val canSilentReLogin: () -> Boolean = { false },
+    private val performSilentReLogin: () -> Boolean = { false },
+    private val onFinalExpired: () -> Unit = {},
 ) : Interceptor {
+
+    private val lock = Any()
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val response = chain.proceed(request)
         if (response.isSuccessful && request.url.host == SESSION_HOST) {
-            runCatching {
+            val hasExpiredCode = runCatching {
                 val text = response.peekBody(16 * 1024).string()
-                if (ERROR_CODE_8.containsMatchIn(text)) onExpired()
+                ERROR_CODE_8.containsMatchIn(text)
+            }.getOrDefault(false)
+
+            if (hasExpiredCode) {
+                if (canSilentReLogin()) {
+                    val recovered = synchronized(lock) {
+                        performSilentReLogin()
+                    }
+                    if (recovered) {
+                        // 静默重连成功：关闭旧响应，重走后续拦截器（自动带上新 loginCode）完成本次请求
+                        response.close()
+                        return chain.proceed(request)
+                    }
+                }
+                onFinalExpired()
             }
         }
         return response
@@ -87,6 +107,8 @@ object NetworkModule {
 
     fun okHttp(
         sessionResolver: (host: String) -> Session?,
+        canSilentReLogin: () -> Boolean = { false },
+        performSilentReLogin: () -> Boolean = { false },
         debug: Boolean = false,
         diag: Boolean = false,
         onSessionExpired: () -> Unit = {},
@@ -96,8 +118,8 @@ object NetworkModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor(SessionExpiredInterceptor(canSilentReLogin, performSilentReLogin, onSessionExpired))
             .addInterceptor(CommonParamsInterceptor(sessionResolver, json))
-            .addInterceptor(SessionExpiredInterceptor(onSessionExpired))
             .apply {
                 if (diag) addInterceptor(DiagHttpInterceptor())
                 if (debug) {

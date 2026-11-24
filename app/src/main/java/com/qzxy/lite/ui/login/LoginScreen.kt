@@ -1,6 +1,7 @@
 package com.qzxy.lite.ui.login
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.WaterDrop
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -178,7 +180,30 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Spacer(Modifier.size(22.dp))
+                    Spacer(Modifier.size(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { vm.onKeepLoggedInChange(!state.keepLoggedIn) }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Checkbox(
+                            checked = state.keepLoggedIn,
+                            onCheckedChange = vm::onKeepLoggedInChange,
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Column {
+                            Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "周期自动续期会话，Token 失效在后台静默重连",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.size(16.dp))
                     Button(
                         onClick = { vm.loginWithPassword(onLoginSuccess) },
                         enabled = state.telephone.length == 11 &&
@@ -234,7 +259,30 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         }
                         else -> {}
                     }
-                    Spacer(Modifier.size(22.dp))
+                    Spacer(Modifier.size(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { vm.onKeepLoggedInChange(!state.keepLoggedIn) }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Checkbox(
+                            checked = state.keepLoggedIn,
+                            onCheckedChange = vm::onKeepLoggedInChange,
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Column {
+                            Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "周期自动续期会话；如需长期免输验证码建议改用密码登录",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.size(16.dp))
                     Button(
                         onClick = { vm.login(onLoginSuccess) },
                         enabled = state.telephone.length == 11 &&

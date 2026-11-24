@@ -43,7 +43,9 @@ class AppContainer(context: Context) {
     }
 
     private val okHttpClient = NetworkModule.okHttp(
-        sessionResolver,
+        sessionResolver = sessionResolver,
+        canSilentReLogin = { sessionStore.keepLoggedIn && sessionStore.savedPasswordMd5 != null },
+        performSilentReLogin = { authRepository.performSilentReLoginSync() },
         debug = BuildConfig.DEBUG,
         diag = BuildConfig.DIAG_LOG,
         onSessionExpired = {

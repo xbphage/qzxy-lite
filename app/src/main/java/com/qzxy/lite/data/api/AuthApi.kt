@@ -79,6 +79,17 @@ interface AuthApi {
     @POST("user/project/bind")
     suspend fun bindProject(@Body body: BindProjectRequest): ApiResponse<JsonObject>
 
+    /**
+     * 会话缓存主动续期（对标原版 v0.j().K(context) 调用的 user/login/cache/renewal）。
+     * 周期性调用此接口可直接重置并延长服务端 Redis 中当前 session 的 TTL。
+     */
+    @FormUrlEncoded
+    @POST("user/login/cache/renewal")
+    suspend fun renewLoginCache(
+        @Field("accountId") accountId: String,
+        @Field("projectId") projectId: String,
+    ): ApiResponse<JsonObject>
+
     /** 退出登录。 */
     @POST("user/logout")
     suspend fun logout(): ApiResponse<JsonObject>

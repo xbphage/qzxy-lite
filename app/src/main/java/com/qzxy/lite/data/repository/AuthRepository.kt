@@ -1,6 +1,8 @@
 package com.qzxy.lite.data.repository
 
+import com.qzxy.lite.core.ApiConstants
 import com.qzxy.lite.core.ApiException
+import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.core.dataOrThrow
 import com.qzxy.lite.core.successOrThrow
 import com.qzxy.lite.data.api.AuthApi
@@ -8,9 +10,15 @@ import com.qzxy.lite.data.api.BindProjectRequest
 import com.qzxy.lite.data.api.LoginRequest
 import com.qzxy.lite.data.api.SendCodeRequest
 import com.qzxy.lite.data.model.UserInfo
+import com.qzxy.lite.data.network.NetworkModule
 import com.qzxy.lite.data.session.Session
 import com.qzxy.lite.data.session.SessionStore
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.jsonObject
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import retrofit2.HttpException
 
 /**
@@ -38,11 +46,17 @@ class AuthRepository(
     /**
      * 密码登录（绕开验证码频控）：POST v3-api/user/login，password=MD5(明文)。
      * 响应 data 即 user_info；签发的 loginCode 存为主会话（v3）。
+     * [keepLoggedIn] 是否保持登录（对标原版记住登录态，加密存储密码 MD5 供静默重连）。
      */
-    suspend fun passwordLogin(telephone: String, password: String): UserInfo {
+    suspend fun passwordLogin(
+        telephone: String,
+        password: String,
+        keepLoggedIn: Boolean = sessionStore.keepLoggedIn,
+    ): UserInfo {
+        val passMd5 = md5Hex(password)
         val result = authApi.passwordLogin(
             telephone = telephone,
-            passwordMd5 = md5Hex(password),
+            passwordMd5 = passMd5,
         ).dataOrThrow()
         val info = result.merged()
         val loginCode = info.loginCode
@@ -56,8 +70,11 @@ class AuthRepository(
                 accountId = info.accountId.orEmpty(),
                 projectId = info.projectId.orEmpty(),
                 telephone = telephone,
-            )
+            ),
+            passwordMd5 = passMd5,
+            keepLoggedIn = keepLoggedIn,
         )
+        sessionStore.lastRenewalTime = System.currentTimeMillis()
         return info
     }
 
@@ -93,7 +110,11 @@ class AuthRepository(
     }
 
     /** 验证码登录：**POST 表单**（实测成功形态；JSON 被签名校验拒绝）→ 响应 data 自带全套 id，直接落会话。 */
-    suspend fun login(telephone: String, smsCode: String): UserInfo {
+    suspend fun login(
+        telephone: String,
+        smsCode: String,
+        keepLoggedIn: Boolean = sessionStore.keepLoggedIn,
+    ): UserInfo {
         val attempts = mutableListOf<String>()
         val result = try {
             authApi.registerAndLoginForm(
@@ -122,9 +143,115 @@ class AuthRepository(
                 accountId = info.accountId.orEmpty(),
                 projectId = info.projectId.orEmpty(),
                 telephone = telephone,
-            )
+            ),
+            keepLoggedIn = keepLoggedIn,
         )
+        sessionStore.lastRenewalTime = System.currentTimeMillis()
         return info
+    }
+
+    /**
+     * 会话缓存主动续期（对标原版 v0.j().K(context) 调用的 user/login/cache/renewal）。
+     * 调用成功后服务端 Redis 会重新重置 token 的过期时间。
+     */
+    suspend fun renewLoginCache(): Boolean {
+        val cur = sessionStore.current() ?: return false
+        if (cur.accountId.isBlank() || cur.projectId.isBlank()) return false
+        return try {
+            authApi.renewLoginCache(cur.accountId, cur.projectId).successOrThrow()
+            sessionStore.lastRenewalTime = System.currentTimeMillis()
+            DiagLog.d("Auth", "会话主动续期成功 (user/login/cache/renewal)")
+            true
+        } catch (e: Exception) {
+            DiagLog.d("Auth", "会话主动续期失败: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * 启动/前台周期性检查：若距离上次成功续期已超过 24 小时，且开启了保持登录，则在后台无感续期。
+     */
+    suspend fun checkAndRenewSession() {
+        val cur = sessionStore.current() ?: return
+        if (!sessionStore.keepLoggedIn || !cur.isLoggedIn) return
+        val last = sessionStore.lastRenewalTime
+        val now = System.currentTimeMillis()
+        // 超过 24 小时（或从没续期过）则向服务端续期一次
+        if (last <= 0L || (now - last) >= 24 * 3600 * 1000L) {
+            renewLoginCache()
+        }
+    }
+
+    /**
+     * 同步静默重新登录（供网络拦截器捕获到 errorCode=8 时调用）。
+     * 尝试用本地加密保存的凭据换取新 loginCode 并更新 sessionStore。
+     * @return true 表示换取成功，外部拦截器可无感重试当前网络请求；false 表示换取失败。
+     */
+    fun performSilentReLoginSync(): Boolean {
+        val cur = sessionStore.current()
+        val phone = cur?.telephone?.takeIf { it.isNotBlank() }
+            ?: sessionStore.lastTelephone.takeIf { it.isNotBlank() }
+            ?: return false
+        val passMd5 = sessionStore.savedPasswordMd5 ?: return false
+        if (!sessionStore.keepLoggedIn) return false
+
+        return try {
+            // 采用纯净独立的 OkHttpClient 发送密码登录请求，避免循环进入拦截器
+            val form = FormBody.Builder()
+                .add("telephone", phone)
+                .add("password", passMd5)
+                .add("type", "0")
+                .add("phoneSystem", "android")
+                .add("version", ApiConstants.APP_VERSION)
+                .build()
+
+            val req = Request.Builder()
+                .url(ApiConstants.V3_API + "user/login")
+                .post(form)
+                .header("Config-Keys", ApiConstants.CONFIG_KEYS)
+                .build()
+
+            val directClient = OkHttpClient.Builder()
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+
+            val resp = directClient.newCall(req).execute()
+            if (!resp.isSuccessful) return false
+            val body = resp.body?.string() ?: return false
+            val root = NetworkModule.json.parseToJsonElement(body).jsonObject
+            val errorCode = root["errorCode"]?.toString()?.toIntOrNull() ?: -1
+            if (errorCode != 0 && errorCode != 2) {
+                // 密码错误等情况，清空无效的密码缓存
+                if (errorCode == 12) sessionStore.clearCredentials()
+                return false
+            }
+
+            val data = root["data"]?.jsonObject ?: return false
+            val loginCode = data["loginCode"]?.toString()?.trim('"') ?: return false
+            val userId = data["userId"]?.toString()?.trim('"') ?: cur?.userId.orEmpty()
+            val accountId = data["accountId"]?.toString()?.trim('"') ?: cur?.accountId.orEmpty()
+            val projectId = data["projectId"]?.toString()?.trim('"') ?: cur?.projectId.orEmpty()
+
+            sessionStore.update(
+                Session(
+                    loginCode = loginCode,
+                    userId = userId,
+                    accountId = accountId,
+                    projectId = projectId,
+                    telephone = phone,
+                ),
+                passwordMd5 = passMd5,
+                keepLoggedIn = true,
+            )
+            sessionStore.lastRenewalTime = System.currentTimeMillis()
+            sessionStore.clearKickReason()
+            DiagLog.d("Auth", "静默重新登录成功，新会话 loginCode 已无感续签")
+            true
+        } catch (e: Exception) {
+            DiagLog.d("Auth", "静默重连异常: ${e.message}")
+            false
+        }
     }
 
     /** 拉取用户信息并把非空字段回填会话（登录链第 4 步校验）。 */

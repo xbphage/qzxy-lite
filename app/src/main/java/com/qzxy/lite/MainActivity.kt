@@ -87,12 +87,14 @@ private fun QzxyNavHost() {
         }
     }
 
-    // 会话失效（logout/clear）时回到登录页。
+    // 会话失效（logout/clear）时回到登录页；已有会话时在后台检查并自动续期（对标原版 MainActivity.W1）。
     LaunchedEffect(session?.isLoggedIn) {
         if (session?.isLoggedIn != true &&
             navController.currentDestination?.route != Routes.LOGIN
         ) {
             navController.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
+        } else if (session?.isLoggedIn == true) {
+            container.authRepository.checkAndRenewSession()
         }
     }
 
