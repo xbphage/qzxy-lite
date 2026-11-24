@@ -2,9 +2,14 @@ name: Build & Release APK
 
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -81,6 +86,13 @@ jobs:
             echo "::warning::KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS secrets not configured! Exporting unsigned APK..."
             cp "$UNSIGNED_APK" "output/qzxy-lite-${TAG_NAME}-unsigned.apk"
           fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qzxy-lite-apk
+          path: output/qzxy-lite-*.apk
+          if-no-files-found: error
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
