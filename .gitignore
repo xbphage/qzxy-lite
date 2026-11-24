@@ -1,0 +1,23 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build
+
+# 构建产物与发布包（走 GitHub Release，不进源码仓库）
+dist/
+*.apk
+*.aab
+
+# 逆向分析、抓包与临时数据文件（避免单文件超过 100MB 导致 GitHub 拒绝推送）
+apk/
+*.log
+*.har
+*.dex
+scratch/

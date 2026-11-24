@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 更新包安装共享路径：API 29+ 走 MediaStore content://，不经过这里；
+     API 26-28 的公共 Downloads 与应用专属目录走 FileProvider。
+     diag/ 用于把诊断日志分享出去。 -->
+<paths>
+    <external-path
+        name="downloads"
+        path="Download/" />
+    <external-files-path
+        name="apk"
+        path="apk/" />
+    <external-files-path
+        name="diag"
+        path="diag/" />
+</paths>
