@@ -42,7 +42,7 @@ data class UpdateInfo(
 object UpdateManager {
 
     /** GitHub 仓库拥有者与仓库名（默认配置为当前作者账号 xiaobaphage/qzxy-lite） */
-    var githubOwner: String = "xiaobaphage"
+    var githubOwner: String = "xbphage"
     var githubRepo: String = "qzxy-lite"
     private const val APK_MIME = "application/vnd.android.package-archive"
 

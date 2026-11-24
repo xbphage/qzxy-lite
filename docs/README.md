@@ -23,4 +23,4 @@
 - **后端服务端点**：
   - 核心业务网关：`https://v3-api.china-qzxy.cn/`
   - 传统业务网关：`https://wfwapi.china-qzxy.cn/`
-  - 应用更新托管：`https://api.github.com/repos/xiaobaphage/qzxy-lite/`
+  - 应用更新托管：`https://api.github.com/repos/xbphage/qzxy-lite/`
