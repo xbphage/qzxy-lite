@@ -8,18 +8,18 @@ on:
 
 jobs:
   build:
-    name: Build Android Release APK
+    name: Build & Sign Android Release APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -30,12 +30,57 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Prepare APK Asset
+      - name: Sign & Prepare APK Asset
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           mkdir -p output
           TAG_NAME="${{ github.ref_name }}"
           if [ -z "$TAG_NAME" ]; then TAG_NAME="latest"; fi
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "output/qzxy-lite-${TAG_NAME}.apk"
+          
+          UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [ ! -f "$UNSIGNED_APK" ]; then
+            echo "Error: $UNSIGNED_APK not found!"
+            exit 1
+          fi
+
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ]; then
+            echo "Signing secrets detected. Decoding keystore..."
+            echo "$KEYSTORE_BASE64" | base64 -d > release.jks
+
+            # Locate apksigner from Android SDK build-tools
+            BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+            echo "Using apksigner from: $BUILD_TOOLS_DIR"
+
+            # If KEY_PASSWORD is not separately set, fallback to KEYSTORE_PASSWORD
+            ACTUAL_KEY_PASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+
+            OUTPUT_APK="output/qzxy-lite-${TAG_NAME}.apk"
+
+            $BUILD_TOOLS_DIR/apksigner sign \
+              --ks release.jks \
+              --ks-pass pass:"$KEYSTORE_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass pass:"$ACTUAL_KEY_PASS" \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              --v3-signing-enabled true \
+              --out "$OUTPUT_APK" \
+              "$UNSIGNED_APK"
+
+            echo "Verifying APK signature..."
+            $BUILD_TOOLS_DIR/apksigner verify --verbose "$OUTPUT_APK"
+
+            # Securely cleanup keystore file
+            rm -f release.jks
+            echo "Successfully signed APK: $OUTPUT_APK"
+          else
+            echo "::warning::KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS secrets not configured! Exporting unsigned APK..."
+            cp "$UNSIGNED_APK" "output/qzxy-lite-${TAG_NAME}-unsigned.apk"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

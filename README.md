@@ -30,13 +30,89 @@
 ## 构建与运行
 
 ```bash
-# 需要 JDK 17 与 Android SDK（compileSdk 35）
+# 需要 JDK 17+ 与 Android SDK（compileSdk 36）
 ./gradlew :app:assembleDebug     # 调试包
-./gradlew :app:assembleRelease   # 正式签名包
+./gradlew :app:assembleRelease   # 正式发布包（无签名裸包）
 ```
 
 注意：Windows 下请在 **ASCII 路径**构建（中文路径经 gradle.bat 传参可能乱码），
-产物在 `app/build/outputs/apk/`，也可直接到 `dist/` 取已构建好的 APK。
+构建产物在 `app/build/outputs/apk/release/`，已编译好的无签名版本也放置在 `dist/app-release-unsigned.apk`。
+
+## CI/CD 自动构建与发布签名配置（GitHub Actions）
+
+本项目已集成 GitHub Actions 自动化流水线（[.github/workflows/release.yml](.github/workflows/release.yml)）。
+当推送到以 `v` 开头的 Tag 时，GitHub 会自动编译并在 Releases 中发布带有正式数字签名的 APK。
+
+由于 Android 系统的安全限制，**未签名的 APK 无法在手机上直接安装或进行应用内自动更新**。为了让云端自动签名并分发可以直接安装的 APK，请按照以下步骤配置 GitHub Secrets：
+
+### 1. 准备签名密钥库（Keystore）
+
+如果你本地已有常用的 Android 签名密钥库（`.jks` 或 `.keystore` 文件），可直接使用。
+如果没有，可以在本地终端（PowerShell 或 Bash）运行以下命令生成一个新的密钥库文件：
+
+```bash
+keytool -genkeypair -v \
+  -keystore release.jks \
+  -alias qzxy-release \
+  -keyalg RSA \
+  -keysize 2048 \
+  -validity 10000 \
+  -storepass 你的密码123 \
+  -keypass 你的密码123 \
+  -dname "CN=qzxy-lite, OU=Dev, O=Personal, L=City, ST=Province, C=CN"
+```
+
+### 2. 将密钥库转为 Base64 字符串
+
+- **Windows PowerShell**：
+  ```powershell
+  [Convert]::ToBase64String([IO.File]::ReadAllBytes("release.jks")) | Set-Clipboard
+  ```
+  *(命令执行后，Base64 字符串已自动复制到剪贴板)*
+
+- **Linux / macOS**：
+  ```bash
+  base64 -w 0 release.jks
+  # 或者 macOS:
+  # base64 -i release.jks | pbcopy
+  ```
+
+### 3. 在 GitHub 仓库中配置 Secrets
+
+1. 打开 GitHub 仓库页面，点击顶部 **Settings**。
+2. 在左侧菜单找到 **Secrets and variables** -> 点击 **Actions**。
+3. 点击绿色按钮 **New repository secret**，依次添加以下 4 个环境变量：
+
+| Secret 变量名 | 内容说明 | 示例 |
+|---|---|---|
+| `KEYSTORE_BASE64` | 步骤 2 复制的密钥库 Base64 字符串 | `MIIKu...（长文本）` |
+| `KEYSTORE_PASSWORD` | 密钥库文件的密码 | `你的密码123` |
+| `KEY_ALIAS` | 密钥别名（Alias） | `qzxy-release` |
+| `KEY_PASSWORD` | 该密钥别名的私钥密码（若与密钥库相同可填相同值） | `你的密码123` |
+
+### 4. 触发自动构建与发布
+
+配置好上述 Secrets 后，发布新版本只需在本地终端打 Tag 并推送：
+
+```bash
+# 1. 提交本地所有修改
+git add .
+git commit -m "chore: release version v1.0.0"
+
+# 2. 打标签并推送到 GitHub
+git tag v1.0.0
+git push origin master --tags
+```
+
+推送后，GitHub Actions 会自动：
+1. 检出代码并配置 JDK 21 与 Android SDK；
+2. 执行 `./gradlew assembleRelease` 编译出 APK；
+3. 读取 Secrets 解码密钥库，使用 Android SDK 原生 `apksigner` 完成 **V1 + V2 + V3** 强签名并校验签名有效性；
+4. 自动在 GitHub Releases 发布 `qzxy-lite-v1.0.0.apk`。
+
+手机安装该版本后，未来每次发布新 Tag，App 都能检测到并**一键直接完成覆盖更新**！
+
+---
 
 ## 应用内更新说明
 
