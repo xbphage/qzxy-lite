@@ -40,6 +40,9 @@ class ApiException(
         /** 设备正在使用中（开阀防重复）。 */
         const val DEVICE_BUSY_CODE = 307
 
+        /** 账户可用余额低于设备预扣金额。 */
+        const val INSUFFICIENT_BALANCE_CODE = 204
+
         const val HTTP_ERROR_CODE = -100
         const val NETWORK_ERROR_CODE = -101
     }

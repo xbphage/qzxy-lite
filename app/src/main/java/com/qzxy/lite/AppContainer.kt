@@ -77,7 +77,7 @@ class AppContainer(context: Context) {
 
     val authRepository = AuthRepository(authApi, sessionStore)
     val campusRepository = CampusRepository(campusApi, deviceApi)
-    val bathRepository = BathRepository(orderApi, bleWaterMeterClient, sessionStore)
+    val bathRepository = BathRepository(orderApi, bleWaterMeterClient, sessionStore, deviceApi)
     val walletRepository = WalletRepository(walletApi, sessionStore)
     val billRepository = BillRepository(billApi)
 

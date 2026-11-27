@@ -169,15 +169,16 @@ class AuthRepository(
     }
 
     /**
-     * 启动/前台周期性检查：若距离上次成功续期已超过 24 小时，且开启了保持登录，则在后台无感续期。
+     * 启动/前台周期性检查：若距离上次成功续期已超过 12 小时（或首次启动），且开启了保持登录，则在后台主动向服务端续签会话。
+     * 无论是短信验证码登录还是密码登录，服务端均通过刷新 Redis 中 loginCode 的 TTL 保持永久有效。
      */
     suspend fun checkAndRenewSession() {
         val cur = sessionStore.current() ?: return
         if (!sessionStore.keepLoggedIn || !cur.isLoggedIn) return
         val last = sessionStore.lastRenewalTime
         val now = System.currentTimeMillis()
-        // 超过 24 小时（或从没续期过）则向服务端续期一次
-        if (last <= 0L || (now - last) >= 24 * 3600 * 1000L) {
+        // 超过 12 小时（或从没续期过）则向服务端续期一次
+        if (last <= 0L || (now - last) >= 12 * 3600 * 1000L) {
             renewLoginCache()
         }
     }

@@ -22,6 +22,8 @@ fun Throwable.toUserMessage(): String = when (this) {
                 "请确认设备通电、卡有信号，稍后重试；仍不行请联系宿管检查设备。"
         code == ApiException.DEVICE_BUSY_CODE ->
             "设备正在使用中（307）：该设备已有进行中的订单。"
+        code == ApiException.INSUFFICIENT_BALANCE_CODE ->
+            "余额不足（204）：$message"
         code == ApiException.REQUEST_ERROR_CODE -> "请求错误（-1）：$message"
         code == ApiException.DATA_ERROR_CODE -> "数据错误（-2）：$message"
         code == ApiException.HTTP_ERROR_CODE -> "服务端 HTTP 错误：$message"

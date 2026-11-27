@@ -22,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -87,6 +88,8 @@ private fun QzxyNavHost() {
         }
     }
 
+    val scope = rememberCoroutineScope()
+
     // 会话失效（logout/clear）时回到登录页；已有会话时在后台检查并自动续期（对标原版 MainActivity.W1）。
     LaunchedEffect(session?.isLoggedIn) {
         if (session?.isLoggedIn != true &&
@@ -98,9 +101,20 @@ private fun QzxyNavHost() {
         }
     }
 
+    // 从后台切回前台时，主动检查并续期会话，确保短信验证码登录与密码登录均可无感长效保持
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && session?.isLoggedIn == true) {
+                scope.launch { container.authRepository.checkAndRenewSession() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // —— 应用内更新（GitHub Release）：启动静默检查，有新版弹窗；手动检查入口在"我的"。 ——
     val appContext = LocalContext.current
-    val scope = rememberCoroutineScope()
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var downloadPct by remember { mutableStateOf<Int?>(null) }
     var downloadedUri by remember { mutableStateOf<Uri?>(null) }

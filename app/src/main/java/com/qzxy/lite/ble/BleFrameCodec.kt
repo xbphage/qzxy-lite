@@ -146,9 +146,13 @@ object BleFrameCodec {
         System.arraycopy(payload, 24, randomBytes, 0, 4)
         val randomNumber = randomBytes.joinToString("") { "%02x".format(it) }
 
+        // payload[28..29] 为阀门运行状态：00 00 = 关闭待机；01 00 = 开启出水中
+        val isValveOpen = payload.size > 28 && payload[28] == 0x01.toByte()
+
+        // macType: 官方在云端下单时固定格式化为 "0001" 或按水表类型标识
         val macType1 = if (payload.size > 29) payload[29].toInt() and 0xFF else 0
         val macType2 = if (payload.size > 30) payload[30].toInt() and 0xFF else 0
-        val macType = "%02x%02x".format(macType1, macType2)
+        val macType = if (macType1 == 0 && macType2 == 0) "0001" else "%02x%02x".format(macType1, macType2)
 
         return BleDeviceQueryResult(
             projectId = projectId,
@@ -158,6 +162,7 @@ object BleFrameCodec {
             protocolType = protocolType,
             randomNumber = randomNumber,
             macType = macType,
+            isValveOpen = isValveOpen,
         )
     }
 
@@ -234,6 +239,7 @@ data class BleDeviceQueryResult(
     val protocolType: String,
     val randomNumber: String,
     val macType: String,
+    val isValveOpen: Boolean = false,
 )
 
 data class BleConsumeRecord(

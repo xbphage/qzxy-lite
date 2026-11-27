@@ -260,11 +260,12 @@ class BathViewModel(
             }
         } catch (bleErr: Throwable) {
             DiagLog.d("bath", "BLE open failed: ${bleErr.message}")
+            val bleTip = if (bleErr is ApiException) "" else "。请确保已开启手机蓝牙并贴近水表"
             setState {
                 it.copy(
                     busy = false,
                     phase = BathPhase.IDLE,
-                    error = "蓝牙开阀失败：${bleErr.toUserMessage()}。请确保已开启手机蓝牙并贴近水表",
+                    error = "蓝牙开阀失败：${bleErr.toUserMessage()}$bleTip",
                 )
             }
         }

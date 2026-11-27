@@ -9,7 +9,8 @@
 ### 1. 域名网关与基础配置
 *   **主业务网关**：`https://v3-api.china-qzxy.cn/`（几乎所有用户认证、水表开闭、充值、钱包接口均在此网关）
 *   **传统老接口网关**：`https://wfwapi.china-qzxy.cn/`
-*   **脱机蓝牙备用网关**：`https://wfwoff.china-qzxy.cn/`
+*   **脱机蓝牙专有网关**：`https://wfwoff.china-qzxy.cn/`（官方 App 脱机蓝牙水表专用接口网关，端点如 `/offlineOrder/downRate/bluetooth/rateOrder`、`/offlineOrder/upload/bluetooth/data`）
+*   **H5 页面活动域（非 API 网关）**：`https://app-cold-water.china-qzxy.cn/`（用于 WebView 展示 `/billDetail` 账单明细网页与 `/coupon` 优惠券，并非 RESTful 数据接口）
 *   **客户端版本标识**：`6.5.28`
 *   **客户端操作系统**：`android`
 
@@ -409,14 +410,14 @@ Content-Type: application/json;charset=UTF-8
 #### 请求参数字段解释表
 | 字段名 | 类型 | 必填 | 示例值 | 字段含义与技术解析 |
 | :--- | :---: | :---: | :--- | :--- |
-| **`deviceId`** | String | 是 | `"19931"` | 水表系统数字设备 ID。从蓝牙 0x23 查询响应中的 `0x0F-0x12` 提取（大端整数转十进制字符串）。 |
+| **`deviceId`** | String | 是 | `"19931"` | **云端登记的设备 ID (`DeviceInfo.DevID`)**。由 `device/info/mac` 接口根据设备 MAC 查询获得。**注意**：切勿直接传入水表蓝牙 0x23 响应中的内部物理芯片 ID（如 `20863`），否则云端因设备库中无此 ID 会直接报 `519 找不到设备`。官方 App (`BathingBleActivity.java`) 中显式传入 `this.k0.getDevID()` 并以此参与签名计算。 |
 | **`macAddress`** | String | 是 | `"C47F0E3E59C5"` | 水表无冒号大写物理 MAC 地址。 |
 | **`macType`** | String | 是 | `"0001"` | 水表分类硬件标识（从蓝牙 0x23 响应中提取，通常为 `"0001"` 或 `"0000"`）。 |
-| **`bigTypeId`** | String | 是 | `"1"` | 业务大类代码：`"1"` 代表热水淋浴设备。 |
-| **`smallTypeId`**| String | 是 | `"1"` | 业务小类代码：`"1"` 代表计时/计流量脱机水表。 |
+| **`bigTypeId`** | String | 是 | `"4"` | 业务大类代码：官方沐浴设备为 `"4"` (`Dsbtypeid=4`)，饮水为 `"5"`，洗衣为 `"6"`。若传错为 `"1"` 会与后台设备类型不匹配。 |
+| **`smallTypeId`**| String | 是 | `"1"` | 业务小类代码：官方通常为 `"1"` (`DevTypeID`)。 |
 | **`protocolType`**| String| 是 | `"10"` | 脱机计费协议版本代码。从蓝牙 0x23 响应提取，当前主流为第 10 代协议。 |
 | **`randomNumber`**| String| 是 | `"e1000000"` | **核心安全随机挑战字 (Nonce)**。从水表 0x23 响应偏移 `0x1E-0x21` 读取，每次开机动态随机产生，防止下发重放攻击。 |
-| **`signature`** | String | 是 | `"4f2a7b8e91c28d9a..."` | **核心安全加签防伪串**。由 Native JNI 或官方加盐规则生成：对字典序排列参数 `deviceId + randomNumber + telephone + xfModel` 拼上加盐密钥计算 32 位 MD5。 |
+| **`signature`** | String | 是 | `"4f2a7b8e91c28d9a..."` | **核心安全加签防伪串**。由 Native JNI 或逆向双重加盐 MD5 算法生成：Stage 1 拼接字典序参数与 `loginCode` 算 MD5，Stage 2 拼接全局加盐常量 `sign-kailu-...` 算最终 MD5。 |
 | **`xfModel`** | String | 是 | `"0"` | 消费模式代码（默认 `"0"`）。 |
 | **`couponId`** | String | 否 | `null` | 优惠券 ID（若使用优惠券抵扣洗浴费用时传入）。 |
 

@@ -88,6 +88,18 @@ data class AreaItem(
 data class BathDevice(
     /** 后端下发的正式显示名（如"热水表-2栋-2单元-6层-2-2-625"），见 notes/蓝牙设备名识别.md §6。 */
     @Serializable(with = FlexibleStringSerializer::class) @SerialName("DevName") val devName: String? = null,
+    /** 云端登记的设备 ID（与水表蓝牙 0x23 响应中的内部物理 ID 不同，下单签名必须传此 DevID）。 */
+    @Serializable(with = FlexibleStringSerializer::class) @SerialName("DevID") val devId: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val deviceId: String? = null,
+    /** 设备大类（浴室水表通常为 4，饮水机为 5，洗衣机为 6，吹风机为 7）。 */
+    @Serializable(with = FlexibleStringSerializer::class) @SerialName("Dsbtypeid") val bigTypeId: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val dsbtypeid: String? = null,
+    /** 设备小类（通常为 1）。 */
+    @Serializable(with = FlexibleStringSerializer::class) @SerialName("DevTypeID") val smallTypeId: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val devTypeId: String? = null,
+    /** 项目/学校 ID。 */
+    @Serializable(with = FlexibleStringSerializer::class) @SerialName("PrjID") val prjId: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val projectId: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val snCode: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val deviceSncode: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val macAddress: String? = null,
@@ -103,6 +115,11 @@ data class BathDevice(
     @Serializable(with = FlexibleStringSerializer::class) val usingStatus: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val isBle: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val isOnline: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val bindDeviceSnCode: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val keyNo: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val keyType: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val withholdMoney: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val deductionMethod: String? = null,
     /** BLE 扫描时的信号强度（dBm），仅本地保存的设备携带。 */
     val signal: Int? = null,
 ) {
@@ -111,6 +128,9 @@ data class BathDevice(
     /** 设备 SN：接口参数同时出现 snCode 与 deviceSncode，联调时以实际响应补齐映射（TODO(probe)）。 */
     val sn: String? get() = deviceSncode ?: snCode
     val isBusy: Boolean get() = usingStatus == "1" || status == "1"
+    val cloudDeviceId: String? get() = devId?.takeIf { it.isNotBlank() } ?: deviceId?.takeIf { it.isNotBlank() }
+    val resolvedBigTypeId: String? get() = bigTypeId?.takeIf { it.isNotBlank() } ?: dsbtypeid?.takeIf { it.isNotBlank() }
+    val resolvedSmallTypeId: String? get() = smallTypeId?.takeIf { it.isNotBlank() } ?: devTypeId?.takeIf { it.isNotBlank() }
 }
 
 /** 余额（account/wallet）。字段名候选并存；金额统一归一成元字符串（整数=0.001 元，字符串=元）。 */
@@ -120,8 +140,23 @@ data class WalletInfo(
     @Serializable(with = YuanStringSerializer::class) val balance: String? = null,
     @Serializable(with = YuanStringSerializer::class) val allMoney: String? = null,
     @Serializable(with = YuanStringSerializer::class) val walletMoney: String? = null,
+    @Serializable(with = YuanStringSerializer::class) val accountMoney: String? = null,
+    @Serializable(with = YuanStringSerializer::class) val accountRealMoney: String? = null,
+    @Serializable(with = YuanStringSerializer::class) val accountGivenMoney: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val accountRealMoneyStr: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class) val accountGivenMoneyStr: String? = null,
 ) {
-    val display: String get() = money ?: balance ?: walletMoney ?: allMoney ?: "--"
+    val display: String
+        get() {
+            val direct = money ?: balance ?: walletMoney ?: allMoney
+            if (!direct.isNullOrBlank()) return direct
+            val real = (accountMoney ?: accountRealMoney ?: accountRealMoneyStr)?.toDoubleOrNull()
+            val given = (accountGivenMoney ?: accountGivenMoneyStr)?.toDoubleOrNull()
+            if (real != null || given != null) {
+                return com.qzxy.lite.core.formatYuan((real ?: 0.0) + (given ?: 0.0))
+            }
+            return "--"
+        }
 }
 
 /** 预估消费（order/perMoney）。 */

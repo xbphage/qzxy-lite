@@ -197,7 +197,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         Column {
                             Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "周期自动续期会话，Token 失效在后台静默重连",
+                                "自动保存会话并自动续期，关闭或重启 App 无需重新输入密码",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -276,7 +276,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         Column {
                             Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "周期自动续期会话；如需长期免输验证码建议改用密码登录",
+                                "自动保存会话并自动续期，关闭或重启 App 无需重新获取验证码",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

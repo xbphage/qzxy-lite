@@ -7,7 +7,9 @@ import com.qzxy.lite.core.ApiException
 import com.qzxy.lite.core.ApiResponse
 import com.qzxy.lite.core.dataOrThrow
 import com.qzxy.lite.core.successOrThrow
+import com.qzxy.lite.data.api.DeviceApi
 import com.qzxy.lite.data.api.OrderApi
+import com.qzxy.lite.data.model.BathDevice
 import com.qzxy.lite.data.model.BluetoothDownRateData
 import com.qzxy.lite.data.model.BluetoothUploadData
 import com.qzxy.lite.data.model.MoneyEstimate
@@ -26,6 +28,7 @@ class BathRepository(
     private val orderApi: OrderApi,
     private val bleClient: BleWaterMeterClient? = null,
     private val sessionStore: SessionStore? = null,
+    private val deviceApi: DeviceApi? = null,
 ) {
 
     /** 记录最近一次 0x23 查询得到的水表动态随机数，供关阀结算上报使用 */
@@ -105,15 +108,40 @@ class BathRepository(
         val queryResult = client.queryDevice().getOrThrow()
         Log.d(TAG, "BLE Query success: $queryResult")
 
+        onBleStatus("正在向云端获取设备信息...")
+        // 官方链路对比：官方在进入开阀流程前，必须先获取云端登记的 DeviceInfo (包含 DevID, Dsbtypeid 等)。
+        // 水表 BLE 0x23 响应中包含的 deviceId (即 bArrA[9..12]) 是水表 EEPROM 内置的物理芯片/出厂序号，
+        // 云端数据库中按 DevID 查找设备。若直接向接口发送水表内部物理 ID，云端因找不到设备记录报错 519 "找不到设备"！
+        val cloudDevice: BathDevice? = runCatching {
+            deviceApi?.deviceByMac(macAddress = queryResult.deviceMac)?.data
+        }.getOrNull() ?: runCatching {
+            val uncoloned = queryResult.deviceMac.replace(":", "")
+            deviceApi?.deviceByMac(macAddress = uncoloned)?.data
+        }.getOrNull() ?: runCatching {
+            deviceApi?.deviceByMac(macAddress = deviceMac)?.data
+        }.getOrNull()
+
+        val cloudDevId = cloudDevice?.cloudDeviceId
+        val deviceIdStr = if (!cloudDevId.isNullOrBlank()) {
+            Log.d(TAG, "Using cloud registered DevID: $cloudDevId (BLE EEPROM ID was ${queryResult.deviceId})")
+            cloudDevId
+        } else {
+            Log.w(TAG, "Cloud DevID not found for ${queryResult.deviceMac}, falling back to BLE EEPROM ID: ${queryResult.deviceId}")
+            queryResult.deviceId.toString()
+        }
+
+        // 官方沐浴水表大类 ID 默认是 4 (Dsbtypeid=4)，小类默认是 1 (DevTypeID=1)
+        val resolvedBigTypeId = cloudDevice?.resolvedBigTypeId ?: if (bigTypeId == "1") "4" else bigTypeId
+        val resolvedSmallTypeId = cloudDevice?.resolvedSmallTypeId ?: smallTypeId
+
         onBleStatus("正在向云端申请开阀授权指令...")
-        val deviceIdStr = queryResult.deviceId.toString()
         val macWithoutColons = queryResult.deviceMac.replace(":", "").uppercase()
         val randomNumber = queryResult.randomNumber
         lastRandomNumber = randomNumber
         val protocolType = queryResult.protocolType
         val macType = queryResult.macType
 
-        // 构造签名参数并执行签名
+        // 构造签名参数并执行签名（使用云端 DevID）
         val signParams = mapOf(
             "telephone" to phone,
             "deviceId" to deviceIdStr,
@@ -122,29 +150,40 @@ class BathRepository(
         )
         val signature = JniUtils.sign(session.loginCode, signParams)
 
-        // 请求云端开阀指令（若默认端点失败则自动尝试离线端点）
+        // 请求云端开阀指令（仅网络/HTTP/网关错误时回退离线端点；业务错误如 204 金额不足、531 防连点直接透传）
         val downRateResp = try {
             val r = orderApi.bluetoothRateOrder(
                 deviceId = deviceIdStr,
                 macAddress = macWithoutColons,
                 macType = macType,
-                bigTypeId = bigTypeId,
-                smallTypeId = smallTypeId,
+                bigTypeId = resolvedBigTypeId,
+                smallTypeId = resolvedSmallTypeId,
                 protocolType = protocolType,
                 randomNumber = randomNumber,
                 signature = signature,
                 xfModel = "0",
                 couponId = couponId,
             )
-            if (r.errorCode == 0 && r.data != null) r else throw ApiException(r.errorCode, r.effectiveMessage)
+            if (r.errorCode == 0 && r.data != null) {
+                r
+            } else if (r.errorCode == ApiException.INSUFFICIENT_BALANCE_CODE) {
+                val withholdHint = cloudDevice?.withholdMoney
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { "（设备开阀需预扣 ¥$it，请确认账户余额充足或前往钱包充值）" }
+                    .orEmpty()
+                throw ApiException(r.errorCode, "${r.effectiveMessage}$withholdHint")
+            } else {
+                throw ApiException(r.errorCode, r.effectiveMessage)
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "bluetoothRateOrder failed (${e.message}), trying offline endpoint")
+            if (!shouldFallbackToOffline(e)) throw e
+            Log.w(TAG, "bluetoothRateOrder network/gateway failed (${e.message}), trying offline endpoint")
             orderApi.offlineBluetoothRateOrder(
                 deviceId = deviceIdStr,
                 macAddress = macWithoutColons,
                 macType = macType,
-                bigTypeId = bigTypeId,
-                smallTypeId = smallTypeId,
+                bigTypeId = resolvedBigTypeId,
+                smallTypeId = resolvedSmallTypeId,
                 protocolType = protocolType,
                 randomNumber = randomNumber,
                 signature = signature,
@@ -212,7 +251,8 @@ class BathRepository(
             )
             if (r.errorCode == 0 && r.data != null) r else throw ApiException(r.errorCode, r.effectiveMessage)
         } catch (e: Exception) {
-            Log.w(TAG, "bluetoothUploadData failed (${e.message}), trying offline endpoint")
+            if (!shouldFallbackToOffline(e)) throw e
+            Log.w(TAG, "bluetoothUploadData network/gateway failed (${e.message}), trying offline endpoint")
             orderApi.offlineBluetoothUploadData(
                 protocolType = "10",
                 randomNumber = uploadRandomNumber,
@@ -244,6 +284,14 @@ class BathRepository(
 
     fun disconnectBle() {
         bleClient?.disconnect()
+    }
+
+    /** 仅网络异常、HTTP 失败或网关错误 502502 时回退到离线网关，业务错误码（如 204 余额不足、531 防连点）直接透传。 */
+    private fun shouldFallbackToOffline(e: Throwable): Boolean = when (e) {
+        is ApiException -> e.code == 502502 ||
+            e.code == ApiException.NETWORK_ERROR_CODE ||
+            e.code == ApiException.HTTP_ERROR_CODE
+        else -> true
     }
 
     companion object {
