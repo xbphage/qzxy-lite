@@ -1,5 +1,8 @@
 package com.qzxy.lite.ble
 
+import com.qzxy.lite.core.hexToByteArray
+import com.qzxy.lite.core.toHexString
+
 /**
  * 趣智校园 脱机水表/蓝牙水表 BLE 协议编解码器。
  *
@@ -48,7 +51,7 @@ object BleFrameCodec {
         inner[inner.size - 2] = (chkSum and 0xFF).toByte()
         inner[inner.size - 1] = 0x16.toByte()
 
-        val hexStr = inner.joinToString("") { "%02x".format(it) }
+        val hexStr = inner.toHexString(uppercase = false)
         val outer = "#$hexStr\n"
         return outer.toByteArray(Charsets.US_ASCII)
     }
@@ -112,9 +115,7 @@ object BleFrameCodec {
             expectedChk += (b.toInt() and 0xFF)
         }
         val actualChk = raw[raw.size - 2].toInt() and 0xFF
-        if ((expectedChk and 0xFF) != actualChk) {
-            // 校验和容错，若不完全一致仍保留载荷返回
-        }
+        val checksumValid = (expectedChk and 0xFF) == actualChk
 
         return DecodedFrame(
             cmd = cmd,
@@ -122,6 +123,7 @@ object BleFrameCodec {
             sub = sub,
             payload = payload,
             isSuccess = payload.isNotEmpty() && payload[0] == STATUS_SUCCESS,
+            checksumValid = checksumValid,
         )
     }
 
@@ -138,13 +140,13 @@ object BleFrameCodec {
 
         val macBytes = ByteArray(6)
         System.arraycopy(payload, 13, macBytes, 0, 6)
-        val deviceMac = macBytes.joinToString("") { "%02X".format(it) }
+        val deviceMac = macBytes.toHexString(uppercase = true)
 
         val protocolType = "%02x".format(payload[19])
 
         val randomBytes = ByteArray(4)
         System.arraycopy(payload, 24, randomBytes, 0, 4)
-        val randomNumber = randomBytes.joinToString("") { "%02x".format(it) }
+        val randomNumber = randomBytes.toHexString(uppercase = false)
 
         // payload[28..29] 为阀门运行状态：00 00 = 关闭待机；01 00 = 开启出水中
         val isValveOpen = payload.size > 28 && payload[28] == 0x01.toByte()
@@ -175,7 +177,7 @@ object BleFrameCodec {
 
         val dateBytes = ByteArray(6)
         System.arraycopy(payload, 1, dateBytes, 0, 6)
-        val consumeDateHex = dateBytes.joinToString("") { "%02x".format(it) }
+        val consumeDateHex = dateBytes.toHexString(uppercase = false)
 
         val projectId = readInt32(payload, 7)
         val accountId = readInt32(payload, 11)
@@ -183,7 +185,7 @@ object BleFrameCodec {
         val recordIndex = if (payload.size >= 24) readInt32(payload, 20) else 0
         val pulses = if (payload.size >= 32) readInt32(payload, 28) else 0
 
-        val xfDataHex = payload.joinToString("") { "%02x".format(it) }
+        val xfDataHex = payload.toHexString(uppercase = false)
 
         return BleConsumeRecord(
             consumeDateHex = consumeDateHex,
@@ -210,17 +212,7 @@ object BleFrameCodec {
                 (buf[offset + 3].toInt() and 0xFF)
     }
 
-    fun hexStringToByteArray(s: String): ByteArray {
-        val len = s.length
-        val data = ByteArray(len / 2)
-        var i = 0
-        while (i < len) {
-            data[i / 2] = ((Character.digit(s[i], 16) shl 4) +
-                    Character.digit(s[i + 1], 16)).toByte()
-            i += 2
-        }
-        return data
-    }
+    fun hexStringToByteArray(s: String): ByteArray = s.hexToByteArray()
 }
 
 data class DecodedFrame(
@@ -229,6 +221,7 @@ data class DecodedFrame(
     val sub: Int,
     val payload: ByteArray,
     val isSuccess: Boolean,
+    val checksumValid: Boolean = true,
 )
 
 data class BleDeviceQueryResult(

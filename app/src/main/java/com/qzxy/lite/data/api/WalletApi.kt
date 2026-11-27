@@ -13,12 +13,11 @@ import retrofit2.http.POST
 import retrofit2.http.Query
 
 /**
- * 余额 / 充值（2026-11-13 充值流程文档实测定稿，见 notes/充值支付流程.md）：
- * - 端点在 v3-api（生产等价路径为 wfwapi wallet 系列，由 MyApp.e 双网关开关切换）；
- * - account/wallet、user/account/money/all 实测为 **POST 表单**（GET 传参被判"参数为空"），
- *   Retrofit 要求 @FormUrlEncoded 至少一个 @Field，这里放 projectId（拦截器不重复注入）；
- * - 充值下单：settlement/weChat|alipay/recharge/app/balance，表单 payWay=5(微信)/rechargeMoney/signature/telPhone；
- *   signature 生成逻辑未还原（native/工具类），先用验证码同款 secret 试探，以服务端返回为准。
+ * 余额 / 充值（2026-11-13 ~ 2026-11-28 实测定稿）：
+ * - 端点在 v3-api（默认网关）；
+ * - account/wallet、user/account/money/all 均为 **GET + 公共参数**（原版同款调用）；
+ * - 充值下单：settlement/weChat/recharge/app/balance 与 settlement/alipay/recharge/balance，
+ *   signature 由 `WalletRepository.rechargeSignature` 按参数字典序拼接 + `JniUtils.getSk()` 后 MD5 生成。
  */
 interface WalletApi {
 
