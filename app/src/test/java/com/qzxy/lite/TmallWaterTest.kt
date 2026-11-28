@@ -9,6 +9,7 @@ import com.qzxy.lite.tmall.TmallJson
 import com.qzxy.lite.tmall.TmallMtopClient
 import com.qzxy.lite.tmall.TmallMtopError
 import com.qzxy.lite.tmall.TmallQrCodec
+import com.qzxy.lite.tmall.TmallWalletAccount
 import com.qzxy.lite.tmall.TmallWaterApi
 import com.qzxy.lite.tmall.TmallWaterDevice
 import com.qzxy.lite.tmall.TmallWaterSessionStore
@@ -252,5 +253,146 @@ class TmallWaterTest {
         assertTrue(WaterQuickUse.unlockUnconfirmed(IOException("timeout")))
         assertTrue(WaterQuickUse.unlockUnconfirmed(TmallMtopError(listOf("NETWORK_ERROR::reset"))))
         assertFalse(WaterQuickUse.unlockUnconfirmed(TmallMtopError(listOf("1048::订单未找到"))))
+    }
+
+    @Test
+    fun `TmallWaterApi parses wallet accounts device fund info and recent records in fen`() {
+        val client = TmallMtopClient(
+            cookies = linkedMapOf("_m_h5_tk" to "tok_w1"),
+            transport = { url, _ ->
+                when {
+                    url.contains(TmallWaterApi.API_DEVICE_INFO) ->
+                        """
+                        {
+                          "ret": ["SUCCESS::调用成功"],
+                          "data": {
+                            "data": {
+                              "deviceResponse": {
+                                "deviceCode": "630102040",
+                                "deviceId": "869451084947543",
+                                "deviceName": "直饮水",
+                                "campusAreaId": 500960,
+                                "merchantId": 14735,
+                                "relationshipId": 10915,
+                                "onlineStatus": "ONLINE",
+                                "deviceCanUse": true
+                              },
+                              "deviceBusinessAttributeDTO": { "businessType": "WASH_AND_CARE" },
+                              "bizTimeConfig": { "isInBusinessTime": true }
+                            }
+                          }
+                        }
+                        """.trimIndent() to emptyList()
+                    url.contains(TmallWaterApi.API_FUND_ACCOUNT_LIST) ->
+                        """
+                        {
+                          "ret": ["SUCCESS::调用成功"],
+                          "data": {
+                            "response": [
+                              {
+                                "id": 101,
+                                "fundName": "直饮水钱包",
+                                "relationShipId": 10915,
+                                "fundPlatform": "TMXY",
+                                "campusAreaCode": "500960",
+                                "subjectCode": "WATER",
+                                "canRecharge": true,
+                                "fundAccount": {
+                                  "fundAccountId": "9001",
+                                  "totalUsableAmount": 1250,
+                                  "totalFreezeAmount": 50,
+                                  "statusName": "FROZEN"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                        """.trimIndent() to emptyList()
+                    url.contains(TmallWaterApi.API_FUND_DEVICE_INFO) ->
+                        """
+                        {
+                          "ret": ["SUCCESS::调用成功"],
+                          "data": {
+                            "freezeAmount": 200,
+                            "waterActivity": { "hasActivity": true, "name": "校园直饮水" },
+                            "fundAccreditAndAccountGetResponse": {
+                              "fundName": "宿舍水卡",
+                              "relationShipId": 10915,
+                              "fundPlatform": "TMXY",
+                              "subjectCode": "WATER",
+                              "canRecharge": true,
+                              "fundAccount": {
+                                "fundAccreditId": "202",
+                                "fundAccountId": "9002",
+                                "totalUsableAmount": 805
+                              }
+                            }
+                          }
+                        }
+                        """.trimIndent() to emptyList()
+                    url.contains(TmallWaterApi.API_FUND_ACCOUNT_HOMEPAGE) ->
+                        """
+                        {
+                          "ret": ["SUCCESS::调用成功"],
+                          "data": {
+                            "response": {
+                              "accountResponse": {
+                                "id": 101,
+                                "fundName": "直饮水钱包",
+                                "fundAccount": {
+                                  "fundAccountId": "9001",
+                                  "totalUsableAmount": 1200,
+                                  "totalFreezeAmount": 0,
+                                  "statusName": "NORMAL"
+                                }
+                              },
+                              "orderResponse": {
+                                "data": [
+                                  {
+                                    "totalAmountStr": "-0.50",
+                                    "sourceInfo": "三楼饮水机消费",
+                                    "outOrderId": "ORD-88",
+                                    "createTimeStr": "2026-11-28 10:15:00",
+                                    "attr": { "remark": "200ml" }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                        """.trimIndent() to emptyList()
+                    else -> """{"ret":["SUCCESS::调用成功"],"data":{}}""" to emptyList()
+                }
+            },
+        )
+        val api = TmallWaterApi(client)
+
+        val dev = api.deviceInfo("tmxy869451084947543")
+        assertEquals("500960", dev.campusAreaId)
+        assertEquals("14735", dev.merchantId)
+        assertEquals("10915", dev.relationshipId)
+        assertEquals("WASH_AND_CARE", dev.businessType)
+
+        val accounts = api.fundAccountList()
+        assertEquals(1, accounts.size)
+        assertEquals("12.50", accounts[0].usableDisplay)
+        assertEquals("0.50", accounts[0].freezeDisplay)
+        assertTrue(accounts[0].isWithdrawingFrozen)
+
+        val (devWallet, actName) = api.fundDeviceInfo(dev)
+        assertEquals("校园直饮水", actName)
+        assertEquals("8.05", devWallet!!.usableDisplay)
+        assertEquals("2.00", devWallet.freezeDisplay)
+
+        val (refreshed, records) = api.fundAccountHomePage(accounts[0])
+        assertEquals("12.00", refreshed!!.usableDisplay)
+        assertFalse(refreshed.isWithdrawingFrozen)
+        assertEquals(1, records.size)
+        assertEquals("-0.50", records[0].amountDisplay)
+        assertEquals("三楼饮水机消费", records[0].sourceInfo)
+        assertEquals("200ml", records[0].remark)
+
+        val neg = TmallWalletAccount(fundAccreditId = "1", fundName = "测试", usableFen = -5)
+        assertEquals("-0.05", neg.usableDisplay)
     }
 }

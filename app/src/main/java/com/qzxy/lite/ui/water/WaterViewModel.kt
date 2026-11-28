@@ -6,6 +6,7 @@ import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.tmall.SavedWaterDevice
 import com.qzxy.lite.tmall.TmallMtopError
 import com.qzxy.lite.tmall.TmallQrCodec
+import com.qzxy.lite.tmall.TmallWalletAccount
 import com.qzxy.lite.tmall.TmallWaterRepository
 import com.qzxy.lite.tmall.WaterDeviceSortMode
 import com.qzxy.lite.tmall.WaterQuickUse
@@ -43,10 +44,14 @@ data class WaterUiState(
     val lastUnlockedResNo: String? = null,
     val highlightedResNo: String? = null,
     val activeOrder: ActiveWaterOrder? = null,
+    val walletAccounts: List<TmallWalletAccount> = emptyList(),
+    val walletActivityName: String = "",
+    val walletLoading: Boolean = false,
+    val walletError: String? = null,
 )
 
 /**
- * 天猫校园饮水 ViewModel：管理饮水会话状态、扫码/手输设备录入、排序删除与一键解锁/停止。
+ * 天猫校园饮水 ViewModel：管理饮水会话状态、扫码/手输设备录入、水卡余额展示、排序删除与一键解锁/停止。
  */
 class WaterViewModel(
     private val repo: TmallWaterRepository,
@@ -75,13 +80,30 @@ class WaterViewModel(
                         devices = devices,
                         sortMode = sortMode,
                         campusReady = if (!isLogged) true else it.campusReady,
+                        walletAccounts = if (!isLogged) emptyList() else it.walletAccounts,
+                        walletActivityName = if (!isLogged) "" else it.walletActivityName,
+                        walletLoading = if (!isLogged) false else it.walletLoading,
+                        walletError = if (!isLogged) null else it.walletError,
                     )
                 }
                 if (isLogged && probedForCookieCount != cookies.size) {
                     probedForCookieCount = cookies.size
                     probeCampus()
+                    refreshWallet()
                 } else if (!isLogged) {
                     probedForCookieCount = -1
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.walletOverview.collect { overview ->
+                if (overview == null || !repo.sessionStore.isLoggedIn) return@collect
+                _state.update {
+                    it.copy(
+                        walletAccounts = overview.accounts,
+                        walletActivityName = overview.freeActivityName,
+                        walletError = null,
+                    )
                 }
             }
         }
@@ -104,6 +126,38 @@ class WaterViewModel(
             }
             if (probe.code == "FAIL_SYS_SESSION_EXPIRED") {
                 repo.logout()
+            }
+        }
+    }
+
+    fun refreshWallet() {
+        if (!repo.sessionStore.isLoggedIn || _state.value.walletLoading) return
+        viewModelScope.launch {
+            _state.update { it.copy(walletLoading = true, walletError = null) }
+            try {
+                val overview = withContext(Dispatchers.IO) {
+                    repo.loadWalletOverview(includeRecords = false)
+                }
+                _state.update {
+                    it.copy(
+                        walletLoading = false,
+                        walletAccounts = overview.accounts,
+                        walletActivityName = overview.freeActivityName,
+                        walletError = null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                if (t is TmallMtopError && t.code == "FAIL_SYS_SESSION_EXPIRED") {
+                    repo.logout()
+                }
+                _state.update {
+                    it.copy(
+                        walletLoading = false,
+                        walletError = explain(t),
+                    )
+                }
             }
         }
     }
@@ -131,6 +185,9 @@ class WaterViewModel(
                     } else {
                         it.copy(status = "", error = "已保存上限 30 台饮水机，请先在「管理设备」中移除旧设备")
                     }
+                }
+                if (added && _state.value.walletAccounts.isEmpty()) {
+                    refreshWallet()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -176,6 +233,7 @@ class WaterViewModel(
                         status = "",
                     )
                 }
+                refreshWallet()
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -204,6 +262,7 @@ class WaterViewModel(
                         status = "已发送结束接水指令",
                     )
                 }
+                refreshWallet()
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {

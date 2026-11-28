@@ -1,12 +1,15 @@
 package com.qzxy.lite.tmall
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import java.net.URLDecoder
+import kotlin.math.abs
 
 /** 一张饮水机二维码解析结果。 */
 data class ScannedWaterQr(
@@ -32,8 +35,55 @@ data class TmallWaterDevice(
     val inBusinessTime: Boolean,
     val runningStatus: String,
     val faultText: String,
+    val campusAreaId: String = "",
+    val merchantId: String = "",
+    val relationshipId: String = "",
+    val businessType: String = "",
 ) {
     val unlockable: Boolean get() = canUse && online && inBusinessTime && faultText.isBlank()
+}
+
+/** 天猫校园水卡 / 钱包账户（金额单位：分）。 */
+data class TmallWalletAccount(
+    val fundAccreditId: String,
+    val fundAccountId: String = "",
+    val fundName: String,
+    val usableFen: Long,
+    val freezeFen: Long = 0L,
+    val statusName: String = "",
+    val relationShipId: String = "",
+    val fundPlatform: String = "",
+    val campusAreaCode: String = "",
+    val subjectCode: String = "",
+    val canRecharge: Boolean = true,
+    val activityName: String = "",
+) {
+    val usableDisplay: String get() = formatFenToYuan(usableFen)
+    val freezeDisplay: String get() = formatFenToYuan(freezeFen)
+    val isWithdrawingFrozen: Boolean get() = statusName.equals("FROZEN", ignoreCase = true)
+}
+
+/** 天猫校园水卡单条消费/账单流水。 */
+data class TmallWalletRecord(
+    val amountDisplay: String,
+    val sourceInfo: String,
+    val outOrderId: String,
+    val createTimeStr: String,
+    val remark: String = "",
+)
+
+/** 天猫校园钱包聚合信息（账户列表 + 选中账户消费流水 + 免费/配额活动名）。 */
+data class TmallWalletOverview(
+    val accounts: List<TmallWalletAccount>,
+    val records: List<TmallWalletRecord> = emptyList(),
+    val freeActivityName: String = "",
+)
+
+internal fun formatFenToYuan(fen: Long): String {
+    val value = abs(fen)
+    val yuan = value / 100
+    val remainder = (value % 100).toString().padStart(2, '0')
+    return if (fen < 0) "-$yuan.$remainder" else "$yuan.$remainder"
 }
 
 /** 解锁结果（来自 `mtop.tmall.campus.share.applet.device.water.start`）。 */
@@ -80,6 +130,7 @@ class TmallWaterApi(private val client: TmallMtopClient) {
             if (faultStatus.isBlank() || faultStatus == "WELL_FUNCTIONING") "" else d.str("errorMsg")
         }
 
+        val attr = data["deviceBusinessAttributeDTO"]?.asObjOrNull()
         return TmallWaterDevice(
             query = query,
             resNo = d.str("deviceCode").ifBlank { query },
@@ -93,6 +144,10 @@ class TmallWaterApi(private val client: TmallMtopClient) {
             inBusinessTime = biz?.bool("isInBusinessTime", true) ?: true,
             runningStatus = d.str("runningStatus"),
             faultText = faultText,
+            campusAreaId = d.str("campusAreaId"),
+            merchantId = d.str("merchantId"),
+            relationshipId = d.str("relationshipId"),
+            businessType = attr?.str("businessType").orEmpty(),
         )
     }
 
@@ -130,6 +185,126 @@ class TmallWaterApi(private val client: TmallMtopClient) {
             }
         }
         return last ?: CampusProbeResult(false, "UNKNOWN", "校园身份校验失败")
+    }
+
+    /**
+     * 查询当前天猫校园账号下的水卡/洗护钱包账户列表（单位：分，只读）。
+     */
+    fun fundAccountList(
+        businessType: String = BUSINESS_TYPE,
+        campusAreaCode: String = "",
+    ): List<TmallWalletAccount> {
+        val inner = TmallJson.stringify(
+            mapOf(
+                "businessType" to businessType,
+                "campusAreaCode" to campusAreaCode,
+            ),
+        )
+        val body = client.call(
+            API_FUND_ACCOUNT_LIST,
+            mapOf("requestType" to "FUND_ACCREDIT_ACCOUNT_LIST", "requestJson" to inner),
+        )
+        val root = json.parseToJsonElement(body).jsonObject
+        val arr = root["data"]?.asObjOrNull()?.get("response") as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { el ->
+            (el as? JsonObject)?.let { parseFundAccountItem(it) }
+        }
+    }
+
+    /**
+     * 按设备上下文查询单台饮水机关联的校园水卡余额及免费/配额活动状态（只读）。
+     */
+    fun fundDeviceInfo(device: TmallWaterDevice): Pair<TmallWalletAccount?, String> {
+        if (device.campusAreaId.isBlank() ||
+            device.merchantId.isBlank() ||
+            device.relationshipId.isBlank() ||
+            device.deviceId.isBlank()
+        ) {
+            return null to ""
+        }
+        val body = client.call(
+            API_FUND_DEVICE_INFO,
+            mapOf(
+                "campusAreaCode" to (device.campusAreaId.toLongOrNull() ?: device.campusAreaId),
+                "businessTypeEnum" to device.businessType.ifBlank { BUSINESS_TYPE },
+                "payeeId" to (device.merchantId.toLongOrNull() ?: device.merchantId),
+                "relationShipId" to (device.relationshipId.toLongOrNull() ?: device.relationshipId),
+                "deviceId" to device.deviceId,
+                "paymentChannel" to PAYMENT_CHANNEL,
+            ),
+        )
+        val data = json.parseToJsonElement(body).jsonObject["data"]?.asObjOrNull()
+            ?: return null to ""
+        val activity = data["waterActivity"]?.asObjOrNull()
+        val activityName = if (activity?.bool("hasActivity", false) == true) {
+            activity.str("name")
+        } else {
+            ""
+        }
+        val resp = data["fundAccreditAndAccountGetResponse"]?.asObjOrNull()
+            ?: return null to activityName
+        val account = parseFundAccreditBlock(
+            block = resp,
+            fallbackRelationShipId = device.relationshipId,
+            fallbackCampusArea = device.campusAreaId,
+            fallbackFreezeFen = data.longVal("freezeAmount"),
+            activityName = activityName,
+        )
+        return account to activityName
+    }
+
+    /**
+     * 查询指定钱包账户详情与近期消费流水（`FUND_ACCREDIT_ACCOUNT_ORDER_LIST`，只读）。
+     */
+    fun fundAccountHomePage(
+        account: TmallWalletAccount,
+        fundOrderType: String = "CONSUME",
+        pageNum: Int = 1,
+        pageSize: Int = 10,
+    ): Pair<TmallWalletAccount?, List<TmallWalletRecord>> {
+        val inner = TmallJson.stringify(
+            mapOf(
+                "businessType" to BUSINESS_TYPE,
+                "campusAreaCode" to "",
+                "fundOrderType" to fundOrderType,
+                "pageNum" to pageNum.toString(),
+                "pageSize" to pageSize.toString(),
+                "relationShipId" to account.relationShipId,
+                "fundAccreditId" to account.fundAccreditId,
+                "fundPlatform" to account.fundPlatform,
+            ),
+        )
+        val body = client.call(
+            API_FUND_ACCOUNT_HOMEPAGE,
+            mapOf("requestType" to "FUND_ACCREDIT_ACCOUNT_ORDER_LIST", "requestJson" to inner),
+        )
+        val resp = json.parseToJsonElement(body).jsonObject["data"]
+            ?.asObjOrNull()
+            ?.get("response")
+            ?.asObjOrNull()
+            ?: return null to emptyList()
+
+        val refreshedAccount = resp["accountResponse"]?.asObjOrNull()?.let { acctObj ->
+            parseFundAccountItem(acctObj, defaultAccount = account)
+        }
+        val recordsArr = resp["orderResponse"]?.asObjOrNull()?.get("data") as? JsonArray
+        val records = recordsArr?.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val amount = obj.str("totalAmountStr")
+            val source = obj.str("sourceInfo")
+            val outOrderId = obj.str("outOrderId")
+            val time = obj.str("createTimeStr")
+            val remark = obj["attr"]?.asObjOrNull()?.str("remark").orEmpty()
+            if (amount.isBlank() && source.isBlank() && time.isBlank()) return@mapNotNull null
+            TmallWalletRecord(
+                amountDisplay = amount.ifBlank { "--" },
+                sourceInfo = source.ifBlank { "饮水/洗护消费" },
+                outOrderId = outOrderId,
+                createTimeStr = time,
+                remark = remark,
+            )
+        }.orEmpty()
+        return refreshedAccount to records
     }
 
     /** 解锁饮水机（`mtop.tmall.campus.share.applet.device.water.start`）。 */
@@ -172,8 +347,64 @@ class TmallWaterApi(private val client: TmallMtopClient) {
         const val API_WATER_STOP = "mtop.tmall.campus.share.applet.device.water.stop"
         const val API_CAMPUS_LOGIN = "mtop.tmall.campus.member.user.login"
         const val API_CAMPUS_USER_GET = "mtop.tmall.campus.member.app.user.get"
+        const val API_FUND_ACCOUNT_LIST = "mtop.tmall.campus.share.fund.accredit.account.list"
+        const val API_FUND_ACCOUNT_HOMEPAGE = "mtop.tmall.campus.share.fund.accredit.account.homePage"
+        const val API_FUND_DEVICE_INFO = "mtop.tmall.campus.share.app.fund.use.device.info.get"
 
         private val json = Json { ignoreUnknownKeys = true }
+
+        private fun parseFundAccountItem(
+            obj: JsonObject,
+            defaultAccount: TmallWalletAccount? = null,
+        ): TmallWalletAccount {
+            val fa = obj["fundAccount"]?.asObjOrNull()
+            val accreditId = obj.str("id")
+                .ifBlank { obj.str("fundAccreditId") }
+                .ifBlank { fa?.str("fundAccreditId").orEmpty() }
+                .ifBlank { defaultAccount?.fundAccreditId.orEmpty() }
+            val freeze = fa?.longVal("totalFreezeAmount")
+                ?: obj.longVal("freezeAmount").takeIf { it > 0L }
+                ?: defaultAccount?.freezeFen
+                ?: 0L
+            return TmallWalletAccount(
+                fundAccreditId = accreditId,
+                fundAccountId = fa?.str("fundAccountId").orEmpty().ifBlank { defaultAccount?.fundAccountId.orEmpty() },
+                fundName = obj.str("fundName").ifBlank { defaultAccount?.fundName ?: "天猫校园水卡" },
+                usableFen = fa?.longVal("totalUsableAmount") ?: defaultAccount?.usableFen ?: 0L,
+                freezeFen = freeze,
+                statusName = fa?.str("statusName").orEmpty().ifBlank { defaultAccount?.statusName.orEmpty() },
+                relationShipId = obj.str("relationShipId").ifBlank { defaultAccount?.relationShipId.orEmpty() },
+                fundPlatform = obj.str("fundPlatform").ifBlank { defaultAccount?.fundPlatform.orEmpty() },
+                campusAreaCode = obj.str("campusAreaCode").ifBlank { defaultAccount?.campusAreaCode.orEmpty() },
+                subjectCode = obj.str("subjectCode").ifBlank { defaultAccount?.subjectCode.orEmpty() },
+                canRecharge = obj.bool("canRecharge", defaultAccount?.canRecharge ?: true),
+                activityName = defaultAccount?.activityName.orEmpty(),
+            )
+        }
+
+        private fun parseFundAccreditBlock(
+            block: JsonObject,
+            fallbackRelationShipId: String,
+            fallbackCampusArea: String,
+            fallbackFreezeFen: Long,
+            activityName: String,
+        ): TmallWalletAccount? {
+            val fa = block["fundAccount"]?.asObjOrNull() ?: return null
+            return TmallWalletAccount(
+                fundAccreditId = fa.str("fundAccreditId").ifBlank { block.str("id") },
+                fundAccountId = fa.str("fundAccountId"),
+                fundName = block.str("fundName").ifBlank { "天猫校园水卡" },
+                usableFen = fa.longVal("totalUsableAmount"),
+                freezeFen = fa.longVal("totalFreezeAmount").takeIf { it > 0L } ?: fallbackFreezeFen,
+                statusName = fa.str("statusName"),
+                relationShipId = block.str("relationShipId").ifBlank { fallbackRelationShipId },
+                fundPlatform = block.str("fundPlatform"),
+                campusAreaCode = block.str("campusAreaCode").ifBlank { fallbackCampusArea },
+                subjectCode = fa.str("subjectCode").ifBlank { block.str("subjectCode") },
+                canRecharge = block.bool("canRecharge", true),
+                activityName = activityName,
+            )
+        }
 
         private fun kotlinx.serialization.json.JsonElement.asObjOrNull(): JsonObject? =
             this as? JsonObject
@@ -187,6 +418,11 @@ class TmallWaterApi(private val client: TmallMtopClient) {
         private fun JsonObject.bool(key: String, default: Boolean): Boolean {
             val el = get(key) as? JsonPrimitive ?: return default
             return el.booleanOrNull ?: default
+        }
+
+        private fun JsonObject.longVal(key: String): Long {
+            val el = get(key) as? JsonPrimitive ?: return 0L
+            return el.longOrNull ?: el.content.trim().toLongOrNull() ?: 0L
         }
     }
 }

@@ -432,6 +432,8 @@ private fun QzxyNavHost() {
                 WalletScreen(
                     onBack = { goBack() },
                     onOpenLogin = { navController.navigate(Routes.LOGIN) { launchSingleTop = true } },
+                    onOpenTmallPhoneLogin = { navController.navigate(Routes.WATER_PHONE_LOGIN) { launchSingleTop = true } },
+                    onOpenTmallTaobaoLogin = { navController.navigate(Routes.WATER_TAOBAO_LOGIN) { launchSingleTop = true } },
                 )
             }
         }

@@ -1,5 +1,8 @@
 package com.qzxy.lite.tmall
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.IOException
 
 /** 串口化解锁校验流程（迁移自 TMallKey WaterQuickUse）。 */
@@ -44,6 +47,9 @@ class TmallWaterRepository(
     val sessionStore: TmallWaterSessionStore,
     val deviceStore: TmallWaterDeviceStore,
 ) {
+    private val _walletOverview = MutableStateFlow<TmallWalletOverview?>(null)
+    val walletOverview: StateFlow<TmallWalletOverview?> = _walletOverview.asStateFlow()
+
     private fun apiClient(): TmallMtopClient {
         val jar = sessionStore.current()
         if (jar.isEmpty()) throw TmallMtopError(listOf("FAIL_SYS_SESSION_EXPIRED::请先登录天猫校园账号"))
@@ -88,8 +94,71 @@ class TmallWaterRepository(
         sessionStore.adopt(jar)
     }
 
+    /**
+     * 拉取天猫校园水卡/钱包余额与近期流水（只读）：
+     * 优先走 `fund.accredit.account.list`；若返回空或缺少校区 ID 且本地已有饮水机，回退用设备上下文查询 `fund.use.device.info.get`。
+     */
+    fun loadWalletOverview(
+        includeRecords: Boolean = true,
+        preferredIndex: Int = 0,
+    ): TmallWalletOverview {
+        val client = apiClient()
+        val api = TmallWaterApi(client)
+        var activityName = ""
+        var accounts = try {
+            api.fundAccountList()
+        } catch (e: TmallMtopError) {
+            if (e.code == "FAIL_SYS_SESSION_EXPIRED" || e.code == "NETWORK_ERROR") throw e
+            if (e.code == "CAMPUS_AREA_INFO_ID_NULL") emptyList() else throw e
+        }
+
+        if (accounts.isEmpty()) {
+            val firstSaved = deviceStore.devices.value.firstOrNull()
+            if (firstSaved != null) {
+                val deviceResult = runCatching {
+                    val dev = api.deviceInfo(firstSaved.resNo)
+                    api.fundDeviceInfo(dev)
+                }.getOrNull()
+                if (deviceResult != null) {
+                    val (devAcct, actName) = deviceResult
+                    activityName = actName
+                    if (devAcct != null) accounts = listOf(devAcct)
+                }
+            }
+        }
+
+        var records = if (includeRecords) emptyList() else _walletOverview.value?.records.orEmpty()
+        if (includeRecords && accounts.isNotEmpty()) {
+            val idx = preferredIndex.coerceIn(accounts.indices)
+            val target = accounts[idx]
+            if (target.fundAccreditId.isNotBlank() &&
+                target.relationShipId.isNotBlank() &&
+                target.fundPlatform.isNotBlank()
+            ) {
+                val home = runCatching { api.fundAccountHomePage(target) }.getOrNull()
+                if (home != null) {
+                    val (refreshedAcct, fetchedRecords) = home
+                    if (refreshedAcct != null) {
+                        accounts = accounts.toMutableList().apply { set(idx, refreshedAcct) }
+                    }
+                    records = fetchedRecords
+                }
+            }
+        }
+
+        syncClientCookiesIfChanged(client)
+        val overview = TmallWalletOverview(
+            accounts = accounts,
+            records = records,
+            freeActivityName = activityName,
+        )
+        _walletOverview.value = overview
+        return overview
+    }
+
     fun logout() {
         sessionStore.clear()
+        _walletOverview.value = null
     }
 
     private fun syncClientCookiesIfChanged(client: TmallMtopClient) {

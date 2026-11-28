@@ -18,8 +18,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qzxy.lite.appContainer
 import com.qzxy.lite.tmall.SavedWaterDevice
+import com.qzxy.lite.tmall.TmallWalletAccount
 import com.qzxy.lite.tmall.WaterDeviceSortMode
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.QzEmptyState
@@ -242,6 +245,24 @@ fun WaterScreen(
             }
 
             if (state.loggedIn) {
+                val primaryWallet = state.walletAccounts.firstOrNull()
+                if (state.walletLoading ||
+                    primaryWallet != null ||
+                    state.walletActivityName.isNotBlank() ||
+                    state.walletError != null
+                ) {
+                    item {
+                        WaterWalletSummaryCard(
+                            account = primaryWallet,
+                            accountCount = state.walletAccounts.size,
+                            activityName = state.walletActivityName,
+                            loading = state.walletLoading,
+                            error = state.walletError,
+                            onRefresh = vm::refreshWallet,
+                        )
+                    }
+                }
+
                 item {
                     Row(
                         Modifier.fillMaxWidth(),
@@ -408,6 +429,71 @@ private fun WaterDeviceCard(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WaterWalletSummaryCard(
+    account: TmallWalletAccount?,
+    accountCount: Int,
+    activityName: String,
+    loading: Boolean,
+    error: String?,
+    onRefresh: () -> Unit,
+) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                Icons.Rounded.AccountBalanceWallet,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    account?.fundName ?: activityName.ifBlank { "天猫校园水卡" },
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                val sub = when {
+                    error != null -> error
+                    account == null && activityName.isNotBlank() -> "当前为校园活动/免预付直饮水"
+                    account == null -> "正在获取水卡余额…"
+                    else -> buildList {
+                        if (account.freezeFen > 0L) add("冻结 ¥${account.freezeDisplay}")
+                        if (account.isWithdrawingFrozen) add("提现审核中")
+                        if (accountCount > 1) add("共 $accountCount 张卡（见钱包页）")
+                        if (activityName.isNotBlank()) add(activityName)
+                    }.joinToString(" · ").ifBlank { "可用水卡余额（只读，详见钱包页）" }
+                }
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (loading) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else if (account != null) {
+                Text(
+                    "¥${account.usableDisplay}",
+                    style = MaterialTheme.typography.titleMedium.merge(TabularNumbers),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(onClick = onRefresh, enabled = !loading) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "刷新水卡余额")
             }
         }
     }
