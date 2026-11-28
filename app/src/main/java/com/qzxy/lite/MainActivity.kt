@@ -1,7 +1,6 @@
 package com.qzxy.lite
 
 import android.app.Activity
-import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -16,7 +15,6 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -52,7 +50,7 @@ import com.qzxy.lite.ui.login.LoginScreen
 import com.qzxy.lite.ui.scan.ScanScreen
 import com.qzxy.lite.ui.theme.QzxyTheme
 import com.qzxy.lite.ui.wallet.WalletScreen
-import com.qzxy.lite.update.UpdateInfo
+import com.qzxy.lite.update.ReadyUpdate
 import com.qzxy.lite.update.UpdateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -116,23 +114,64 @@ private fun QzxyNavHost() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // —— 应用内更新（GitHub Release）：启动静默检查，有新版弹窗；手动检查入口在"我的"。 ——
+    // —— 应用内静默更新：有已下好的包则直接复用（不重复拉取），否则发现新版后先静默下载并校验签名，就绪后弹窗提示安装。 ——
     val appContext = LocalContext.current
-    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-    var downloadPct by remember { mutableStateOf<Int?>(null) }
-    var downloadedUri by remember { mutableStateOf<Uri?>(null) }
-    var updateError by remember { mutableStateOf<String?>(null) }
+    var readyUpdate by remember { mutableStateOf<ReadyUpdate?>(null) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
 
     fun checkUpdate(notifyWhenLatest: Boolean) {
+        if (isCheckingUpdate) {
+            if (notifyWhenLatest) {
+                Toast.makeText(appContext, "正在检查/准备更新，请稍候…", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        isCheckingUpdate = true
         scope.launch {
-            val info = UpdateManager.fetchLatest()
-            when {
-                info != null && UpdateManager.isNewer(info.version, BuildConfig.VERSION_NAME) ->
-                    updateInfo = info
-                info != null && notifyWhenLatest ->
+            try {
+                val cachedReady = UpdateManager.getVerifiedReadyUpdate(appContext, BuildConfig.VERSION_NAME)
+                if (!notifyWhenLatest && cachedReady != null) {
+                    // 启动自动检查命中已下载且签名校验通过的安装包：不再请求网络或重复下载，直接提示安装
+                    readyUpdate = cachedReady
+                    return@launch
+                }
+
+                val remote = UpdateManager.fetchLatest()
+                if (remote != null && UpdateManager.isNewer(remote.version, BuildConfig.VERSION_NAME)) {
+                    if (cachedReady != null && !UpdateManager.isNewer(remote.version, cachedReady.version)) {
+                        readyUpdate = cachedReady
+                        return@launch
+                    }
+                    if (notifyWhenLatest) {
+                        Toast.makeText(
+                            appContext,
+                            "发现新版本 ${remote.version}，正在静默下载并校验签名…",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    val prepared = runCatching {
+                        UpdateManager.prepareUpdateSilently(appContext, remote)
+                    }
+                    prepared.onSuccess {
+                        readyUpdate = it
+                    }.onFailure { err ->
+                        if (notifyWhenLatest) {
+                            Toast.makeText(
+                                appContext,
+                                "更新下载或签名校验失败：${err.message ?: "请稍后再试"}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                } else if (cachedReady != null) {
+                    readyUpdate = cachedReady
+                } else if (remote != null && notifyWhenLatest) {
                     Toast.makeText(appContext, "当前已是最新版本 ${BuildConfig.VERSION_NAME}", Toast.LENGTH_SHORT).show()
-                info == null && notifyWhenLatest ->
+                } else if (remote == null && notifyWhenLatest) {
                     Toast.makeText(appContext, "检查更新失败，请稍后再试", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                isCheckingUpdate = false
             }
         }
     }
@@ -261,76 +300,42 @@ private fun QzxyNavHost() {
         )
     }
 
-    // —— 更新弹窗：检查 → 下载（进度）→ 开始安装；不跳浏览器。 ——
-    updateInfo?.let { info ->
+    // —— 更新就绪弹窗：安装包已提前静默下载并通过签名校验，点击直接安装。 ——
+    readyUpdate?.let { ready ->
         AlertDialog(
-            onDismissRequest = { if (downloadPct == null || downloadedUri != null) updateInfo = null },
-            title = { Text("发现新版本 ${info.version}") },
+            onDismissRequest = { readyUpdate = null },
+            title = { Text("新版本 ${ready.version} 已准备就绪") },
             text = {
-                Column {
+                Column(Modifier.fillMaxWidth()) {
                     Text(
-                        info.notes.ifBlank { "本次更新包含问题修复与体验优化。" },
+                        ready.notes.ifBlank { "本次更新包含问题修复与体验优化。" },
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
                         maxLines = 8,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    updateError?.let {
-                        androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 8.dp))
-                        Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error)
-                    }
-                    downloadPct?.let { pct ->
-                        androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 12.dp))
-                        LinearProgressIndicator(
-                            progress = { pct / 100f },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 4.dp))
-                        Text(
-                            if (pct >= 100) "下载完成" else "下载中 $pct%",
-                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                val uri = downloadedUri
-                TextButton(
-                    enabled = downloadPct == null || uri != null,
-                    onClick = {
-                        if (uri != null) {
-                            UpdateManager.install(appContext, uri)
-                        } else if (downloadPct == null) {
-                            if (!UpdateManager.canInstall(appContext)) {
-                                UpdateManager.requestInstallPermission(appContext)
-                                return@TextButton
-                            }
-                            downloadPct = 0
-                            updateError = null
-                            scope.launch {
-                                try {
-                                    val u = UpdateManager.downloadApk(appContext, info) { pct ->
-                                        downloadPct = pct
-                                    }
-                                    downloadedUri = u
-                                } catch (t: Throwable) {
-                                    updateError = t.message ?: "下载失败"
-                                    downloadPct = null
-                                }
-                            }
-                        }
-                    },
-                ) {
+                    androidx.compose.foundation.layout.Spacer(Modifier.padding(top = 10.dp))
                     Text(
-                        when {
-                            uri != null -> "开始安装"
-                            downloadPct != null -> "下载中…"
-                            else -> "立即更新"
-                        },
+                        "安装包已在本地下载完成并完成签名校验。",
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                     )
                 }
             },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (!UpdateManager.canInstall(appContext)) {
+                            UpdateManager.requestInstallPermission(appContext)
+                            return@TextButton
+                        }
+                        UpdateManager.install(appContext, ready.installUri)
+                    },
+                ) {
+                    Text("立即安装")
+                }
+            },
             dismissButton = {
-                TextButton(onClick = { updateInfo = null }) { Text("稍后") }
+                TextButton(onClick = { readyUpdate = null }) { Text("稍后") }
             },
         )
     }

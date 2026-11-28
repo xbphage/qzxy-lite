@@ -9,6 +9,9 @@
     <external-files-path
         name="apk"
         path="apk/" />
+    <files-path
+        name="apk_internal"
+        path="apk/" />
     <external-files-path
         name="diag"
         path="diag/" />

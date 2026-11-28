@@ -2,13 +2,19 @@ package com.qzxy.lite.update
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
-import android.provider.MediaStore
 import androidx.core.content.FileProvider
+import androidx.core.content.pm.PackageInfoCompat
+import com.qzxy.lite.BuildConfig
+import com.qzxy.lite.core.toHexString
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -18,12 +24,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.BufferedInputStream
 import java.io.File
-import java.io.OutputStream
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 /** GitHub Release 元数据（只取更新所需字段）。 */
 data class UpdateInfo(
-    val version: String,   // tag_name，如 "v0.1.1"
+    val version: String,   // tag_name，如 "v1.0.3"
     val title: String,
     val notes: String,     // release body
     val apkUrl: String,    // asset 的 browser_download_url
@@ -31,198 +38,259 @@ data class UpdateInfo(
     val apkSize: Long,
 )
 
+/** 已下载并完成本地签名校验、可直接拉起安装器的更新包。 */
+data class ReadyUpdate(
+    val version: String,
+    val title: String,
+    val notes: String,
+    val apkFile: File,
+    val installUri: Uri,
+)
+
 /**
- * 基于 GitHub Release 的应用内更新：
- * 检查（releases/latest，公开仓库免鉴权）→ 应用内下载到系统 Downloads →
- * 拉起系统安装器 → 覆盖安装后由 [com.qzxy.lite.QzxyApp] 里注册的
- * ACTION_PACKAGE_REPLACED 接收器删除下载文件（"安装完毕后自行删除"）。
- *
- * 不跳浏览器、不嵌任何私钥：检查/下载走 GitHub 公开 OpenAPI 与 Release 附件直链。
+ * 基于 GitHub Release 的应用内静默更新：
+ * 1. 国内网络优先尝试 `https://gh-proxy.com/`（失败自动回退备用镜像与 GitHub 直连）；
+ * 2. 发现新版本后在后台静默下载，完成 APK 包名、版本号与签名证书 SHA-256 校验后再弹窗提示安装；
+ * 3. 已下载校验通过的安装包在重启应用后直接本地校验并提示安装，无需重新请求网络或重下；
+ * 4. 覆盖安装完成后由 [com.qzxy.lite.QzxyApp] 的 `PACKAGE_REPLACED` 接收器或下次启动自动清理旧包。
  */
 object UpdateManager {
 
-    /** GitHub 仓库拥有者与仓库名（默认配置为当前作者账号 xiaobaphage/qzxy-lite） */
     var githubOwner: String = "xbphage"
     var githubRepo: String = "qzxy-lite"
-    private const val APK_MIME = "application/vnd.android.package-archive"
+    private const val PRIMARY_GH_PROXY = "https://gh-proxy.com/"
+    private const val FALLBACK_GH_PROXY = "https://ghproxy.net/"
+    private val KNOWN_PROXIES = listOf(PRIMARY_GH_PROXY, FALLBACK_GH_PROXY)
 
-    /** 下载/待安装信息落盘 key（安装完成后清理用）。 */
     const val PREFS = "qzxy_update"
-    const val KEY_PENDING_URI = "pendingUri"
-    const val KEY_PENDING_FILE = "pendingFile"
+    private const val KEY_READY_VERSION = "readyVersion"
+    private const val KEY_READY_TITLE = "readyTitle"
+    private const val KEY_READY_NOTES = "readyNotes"
+    private const val KEY_READY_FILE = "readyFile"
+    private const val KEY_READY_SHA256 = "readySha256"
+    private const val KEY_PENDING_FILE = "pendingFile"
 
+    private val downloadMutex = Mutex()
     private val client = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** 拉取最新 Release；无 Release/网络失败返回 null（静默，不打扰用户）。 */
-    suspend fun fetchLatest(): UpdateInfo? = withContext(Dispatchers.IO) {
-        runCatching {
-            // 请求 GitHub Releases OpenAPI (官方规范要求携带 User-Agent)
-            val apiUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
-            val req = Request.Builder()
-                .url(apiUrl)
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "qzxy-lite-Android")
-                .build()
-            client.newCall(req).execute().use { rsp ->
-                if (!rsp.isSuccessful) return@runCatching null
-                val obj = json.parseToJsonElement(rsp.body!!.string()).jsonObject
-                val apk = obj["assets"]?.jsonArray.orEmpty()
-                    .map { it.jsonObject }
-                    .firstOrNull { (it["name"]?.jsonPrimitive?.content ?: "").endsWith(".apk", true) }
-                    ?: return@runCatching null
-                UpdateInfo(
-                    version = obj["tag_name"]?.jsonPrimitive?.content.orEmpty(),
-                    title = obj["name"]?.jsonPrimitive?.content.orEmpty(),
-                    notes = obj["body"]?.jsonPrimitive?.content.orEmpty(),
-                    apkUrl = apk["browser_download_url"]?.jsonPrimitive?.content.orEmpty(),
-                    apkName = apk["name"]?.jsonPrimitive?.content.orEmpty(),
-                    apkSize = apk["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                )
-            }
-        }.getOrNull()
+    internal fun buildCandidateUrls(rawUrl: String): List<String> {
+        val canonical = stripKnownProxyPrefix(rawUrl.trim())
+        if (canonical.isBlank()) return emptyList()
+        return listOf(
+            "$PRIMARY_GH_PROXY$canonical",
+            "$FALLBACK_GH_PROXY$canonical",
+            canonical,
+        ).distinct()
     }
 
-    /** 语义化版本比较：v0.1.1 vs 0.1.0 → true（有更新）。非数字段按 0 处理。 */
+    private fun stripKnownProxyPrefix(url: String): String {
+        for (prefix in KNOWN_PROXIES) {
+            if (url.startsWith(prefix, ignoreCase = true)) {
+                return url.substring(prefix.length)
+            }
+        }
+        return url
+    }
+
+    /** 语义化版本比较：v1.0.3 vs 1.0.2 → true（有更新）。非数字段按 0 处理。 */
     fun isNewer(remote: String, current: String): Boolean {
         fun parse(v: String) = v.removePrefix("v").removePrefix("V")
             .split('.').map { it.takeWhile { c -> c.isDigit() }.toIntOrNull() ?: 0 }
-        val a = parse(remote); val b = parse(current)
+        val a = parse(remote)
+        val b = parse(current)
         for (i in 0 until maxOf(a.size, b.size)) {
-            val l = a.getOrElse(i) { 0 }; val r = b.getOrElse(i) { 0 }
+            val l = a.getOrElse(i) { 0 }
+            val r = b.getOrElse(i) { 0 }
             if (l != r) return l > r
         }
         return false
     }
 
-    private class Sink(
-        val uri: Uri,
-        val file: File?,
-        private val openStream: () -> OutputStream,
-    ) {
-        fun stream(): OutputStream = openStream()
-        fun cleanup(context: Context) {
-            runCatching { context.contentResolver.delete(uri, null, null) }
-            file?.delete()
+    internal fun matchingSignerDigests(
+        apkSigners: Set<String>,
+        installedSigners: Set<String>,
+    ): Boolean = apkSigners.isNotEmpty() && apkSigners.any { it in installedSigners }
+
+    internal fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).toHexString(uppercase = false)
+
+    /**
+     * 检查本地是否已有已下载且签名校验通过的新版本。
+     * 若当前应用已升级到等于或高于缓存版本，则自动清理旧安装包并返回 null。
+     * 本方法全程离线运行，不会触发任何网络请求。
+     */
+    suspend fun getVerifiedReadyUpdate(
+        context: Context,
+        currentVersion: String = BuildConfig.VERSION_NAME,
+    ): ReadyUpdate? = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val version = prefs.getString(KEY_READY_VERSION, null)?.takeIf { it.isNotBlank() } ?: return@withContext null
+        val filePath = prefs.getString(KEY_READY_FILE, null)?.takeIf { it.isNotBlank() } ?: return@withContext null
+        val expectedSha256 = prefs.getString(KEY_READY_SHA256, null)?.takeIf { it.isNotBlank() } ?: return@withContext null
+
+        if (!isNewer(version, currentVersion)) {
+            clearPending(appContext)
+            return@withContext null
         }
+
+        val file = File(filePath)
+        if (!file.exists() || !file.isFile || file.length() <= 0L) {
+            clearPending(appContext)
+            return@withContext null
+        }
+
+        val intactAndSigned = runCatching {
+            sha256FileHex(file) == expectedSha256 && verifyDownloadedApk(appContext, file)
+        }.getOrDefault(false)
+
+        if (!intactAndSigned) {
+            clearPending(appContext)
+            return@withContext null
+        }
+
+        ReadyUpdate(
+            version = version,
+            title = prefs.getString(KEY_READY_TITLE, "").orEmpty(),
+            notes = prefs.getString(KEY_READY_NOTES, "").orEmpty(),
+            apkFile = file,
+            installUri = fileUri(appContext, file),
+        )
+    }
+
+    /** 拉取最新 Release；优先走 `https://gh-proxy.com/`，失败自动回退。 */
+    suspend fun fetchLatest(): UpdateInfo? = withContext(Dispatchers.IO) {
+        val apiUrl = "https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest"
+        for (candidate in buildCandidateUrls(apiUrl)) {
+            val info = runCatching {
+                val req = Request.Builder()
+                    .url(candidate)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "qzxy-lite-Android")
+                    .build()
+                client.newCall(req).execute().use { rsp ->
+                    if (!rsp.isSuccessful) return@runCatching null
+                    val text = rsp.body?.string().orEmpty()
+                    if (text.isBlank()) return@runCatching null
+                    val obj = json.parseToJsonElement(text).jsonObject
+                    val apk = obj["assets"]?.jsonArray.orEmpty()
+                        .map { it.jsonObject }
+                        .firstOrNull { (it["name"]?.jsonPrimitive?.content ?: "").endsWith(".apk", true) }
+                        ?: return@runCatching null
+                    UpdateInfo(
+                        version = obj["tag_name"]?.jsonPrimitive?.content.orEmpty(),
+                        title = obj["name"]?.jsonPrimitive?.content.orEmpty(),
+                        notes = obj["body"]?.jsonPrimitive?.content.orEmpty(),
+                        apkUrl = stripKnownProxyPrefix(
+                            apk["browser_download_url"]?.jsonPrimitive?.content.orEmpty(),
+                        ),
+                        apkName = apk["name"]?.jsonPrimitive?.content.orEmpty(),
+                        apkSize = apk["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                    )
+                }
+            }.getOrNull()
+            if (info != null && info.version.isNotBlank() && info.apkUrl.isNotBlank()) {
+                return@withContext info
+            }
+        }
+        null
     }
 
     /**
-     * 流式下载 APK：
-     * - API 29+ 写入系统 Downloads（MediaStore，无需存储权限）；
-     * - API 26-28 写公共 Downloads 目录（WRITE_EXTERNAL_STORAGE，maxSdk=28 已声明），
-     *   不可写时退回应用专属目录。
-     * Gitee 对 Release 附件下载会套一层 zip，因此先落到临时名，
-     * 下载完成后 [normalizeToApk] 归一成 .apk 再返回。
-     * 下载前先清掉上一次的待安装残留；进度回调 [0,100]，已切主线程。
+     * 静默下载并校验签名：
+     * - 若对应版本已本地就绪且签名完整，直接复用（零网络下载）；
+     * - 否则走镜像通道下载到应用私有更新目录，必要时解包 zip；
+     * - 校验包名、版本号及与当前安装包一致的签名证书（且拒绝无签名包）；
+     * - 校验通过后再写入就绪元信息，供当前或下次打开应用直接提示安装。
      */
-    suspend fun downloadApk(
+    suspend fun prepareUpdateSilently(
         context: Context,
         info: UpdateInfo,
-        onProgress: (Int) -> Unit,
-    ): Uri = withContext(Dispatchers.IO) {
-        clearPending(context)
+    ): ReadyUpdate = withContext(Dispatchers.IO) {
+        downloadMutex.withLock {
+            val appContext = context.applicationContext
+            val existing = getVerifiedReadyUpdate(appContext, BuildConfig.VERSION_NAME)
+            if (existing != null && !isNewer(info.version, existing.version)) {
+                return@withLock existing
+            }
 
-        val req = Request.Builder()
-            .url(info.apkUrl)
-            .header("User-Agent", "qzxy-lite-Android")
-            .build()
-        val rsp = try {
-            val r = client.newCall(req).execute()
-            if (r.isSuccessful) r else throw IllegalStateException("HTTP ${r.code}")
-        } catch (e: Exception) {
-            // 若国内直连 GitHub 遇阻，尝试加速镜像节点下载
-            val mirrorReq = Request.Builder()
-                .url("https://ghproxy.net/" + info.apkUrl)
-                .header("User-Agent", "qzxy-lite-Android")
-                .build()
-            runCatching { client.newCall(mirrorReq).execute() }.getOrNull()?.takeIf { it.isSuccessful }
-                ?: throw e
+            clearPending(appContext)
+            val dir = apkStorageDir(appContext)
+            val tmpFile = File(dir, "download.tmp")
+            val finalFile = File(dir, sanitizeApkFileName(info.apkName))
+            try {
+                downloadWithMirrors(info.apkUrl, tmpFile)
+                normalizeToApkFile(tmpFile, finalFile)
+                if (!verifyDownloadedApk(appContext, finalFile)) {
+                    throw SecurityException("安装包签名校验失败（未签名或签名与当前应用不一致）")
+                }
+                val fileSha256 = sha256FileHex(finalFile)
+                appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString(KEY_READY_VERSION, info.version)
+                    .putString(KEY_READY_TITLE, info.title)
+                    .putString(KEY_READY_NOTES, info.notes)
+                    .putString(KEY_READY_FILE, finalFile.absolutePath)
+                    .putString(KEY_READY_SHA256, fileSha256)
+                    .putString(KEY_PENDING_FILE, finalFile.absolutePath)
+                    .apply()
+                ReadyUpdate(
+                    version = info.version,
+                    title = info.title,
+                    notes = info.notes,
+                    apkFile = finalFile,
+                    installUri = fileUri(appContext, finalFile),
+                )
+            } catch (t: Throwable) {
+                tmpFile.delete()
+                finalFile.delete()
+                throw t
+            }
         }
-        val body = rsp.body ?: throw IllegalStateException("下载失败：空响应")
-        val total = body.contentLength().takeIf { it > 0 } ?: info.apkSize
+    }
 
-        val appContext = context.applicationContext
-        val temp = openSink(appContext, info.apkName + ".zip")
-        try {
-            body.byteStream().use { input ->
-                temp.stream().use { output ->
-                    val buf = ByteArray(64 * 1024)
-                    var done = 0L
-                    var lastPct = -1
-                    while (true) {
-                        val read = input.read(buf)
-                        if (read == -1) break
-                        output.write(buf, 0, read)
-                        done += read
-                        if (total > 0) {
-                            val pct = (done * 100 / total).toInt()
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                withContext(Dispatchers.Main) { onProgress(pct) }
-                            }
+    private fun downloadWithMirrors(rawUrl: String, destFile: File) {
+        var lastError: Throwable? = null
+        for (url in buildCandidateUrls(rawUrl)) {
+            destFile.delete()
+            val attempt = runCatching {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "qzxy-lite-Android")
+                    .build()
+                client.newCall(req).execute().use { rsp ->
+                    if (!rsp.isSuccessful) throw IllegalStateException("HTTP ${rsp.code}")
+                    val mediaType = rsp.body?.contentType()?.let { "${it.type}/${it.subtype}" }.orEmpty()
+                    if (mediaType.equals("text/html", ignoreCase = true)) {
+                        throw IllegalStateException("镜像返回异常页面而非安装包")
+                    }
+                    val body = rsp.body ?: throw IllegalStateException("下载失败：空响应")
+                    body.byteStream().use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output, bufferSize = 64 * 1024)
                         }
                     }
-                    withContext(Dispatchers.Main) { onProgress(100) }
+                    if (!destFile.exists() || destFile.length() <= 0L) {
+                        throw IllegalStateException("下载文件为空")
+                    }
                 }
             }
-        } catch (t: Throwable) {
-            temp.cleanup(appContext)
-            throw t
+            if (attempt.isSuccess) return
+            destFile.delete()
+            lastError = attempt.exceptionOrNull()
         }
-
-        // Gitee 会把附件打包成 zip：这里统一归一成 .apk（需要时解包）。
-        val final = try {
-            normalizeToApk(appContext, temp, info)
-        } catch (t: Throwable) {
-            temp.cleanup(appContext)
-            throw t
-        }
-
-        // 记录待安装项：装完由 PACKAGE_REPLACED 接收器删除。
-        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(KEY_PENDING_URI, final.uri.toString())
-            .putString(KEY_PENDING_FILE, final.file?.absolutePath)
-            .apply()
-        final.uri
+        throw lastError ?: IllegalStateException("下载失败：所有下载通道均不可用")
     }
 
-    private fun openSink(context: Context, displayName: String): Sink {
-        if (Build.VERSION.SDK_INT >= 29) {
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-                put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            }
-            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("无法写入下载目录")
-            return Sink(uri, null) { context.contentResolver.openOutputStream(uri)!! }
-        }
-        val public = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            displayName,
-        )
-        val target = if (public.parentFile?.canWrite() == true) public
-        else File(context.getExternalFilesDir("apk"), displayName).also { it.parentFile?.mkdirs() }
-        return Sink(fileUri(context, target), target) { target.outputStream() }
-    }
-
-    /**
-     * 把下载产物归一成 .apk：
-     * - 内容本身是 APK（zip 容器含 AndroidManifest.xml）→ 重命名为目标名；
-     * - 内容是 Gitee 打包的 zip（内含 *.apk）→ 解出 APK 写入目标名，并删除 zip；
-     * - 都不是 → 报错。
-     */
-    private fun normalizeToApk(context: Context, temp: Sink, info: UpdateInfo): Sink {
+    private fun normalizeToApkFile(tmpFile: File, targetFile: File) {
         val entryNames = mutableListOf<String>()
         runCatching {
-            val raw = context.contentResolver.openInputStream(temp.uri)
-                ?: temp.file?.inputStream()
-                ?: throw IllegalStateException("下载内容无法读取")
-            raw.use { ins ->
+            tmpFile.inputStream().use { ins ->
                 ZipInputStream(BufferedInputStream(ins)).use { zis ->
                     var e = zis.nextEntry
                     while (e != null) {
@@ -231,60 +299,124 @@ object UpdateManager {
                     }
                 }
             }
-        }.onFailure { return renameTo(context, temp, info.apkName) } // 读不出结构就按原样交付
+        }.onFailure {
+            throw IllegalStateException("安装包格式损坏（非有效压缩包）", it)
+        }
 
-        val looksLikeApk = entryNames.any { it == "AndroidManifest.xml" }
-        if (looksLikeApk) return renameTo(context, temp, info.apkName)
+        if (entryNames.any { it == "AndroidManifest.xml" }) {
+            targetFile.delete()
+            if (!tmpFile.renameTo(targetFile)) {
+                tmpFile.copyTo(targetFile, overwrite = true)
+                tmpFile.delete()
+            }
+            return
+        }
 
         val apkEntry = entryNames.firstOrNull { it.endsWith(".apk", true) }
             ?: throw IllegalStateException("下载内容不是有效的安装包")
 
-        // zip 里包着 apk：解出写入最终位置
-        val final = openSink(context, info.apkName)
-        try {
-            val raw = context.contentResolver.openInputStream(temp.uri)
-                ?: temp.file?.inputStream()
-                ?: throw IllegalStateException("下载内容无法读取")
-            raw.use { ins ->
-                ZipInputStream(BufferedInputStream(ins)).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null && e.name != apkEntry) e = zis.nextEntry
-                    if (e == null) throw IllegalStateException("安装包解压失败")
-                    final.stream().use { output -> zis.copyTo(output) }
-                }
+        targetFile.delete()
+        tmpFile.inputStream().use { ins ->
+            ZipInputStream(BufferedInputStream(ins)).use { zis ->
+                var e = zis.nextEntry
+                while (e != null && e.name != apkEntry) e = zis.nextEntry
+                if (e == null) throw IllegalStateException("安装包解压失败")
+                targetFile.outputStream().use { output -> zis.copyTo(output) }
             }
-        } catch (t: Throwable) {
-            final.cleanup(context)
-            throw t
         }
-        temp.cleanup(context)
-        return final
+        tmpFile.delete()
     }
 
-    /** 把已下载内容改成正式 .apk 文件名（MediaStore 改 DISPLAY_NAME / 文件 rename）。 */
-    private fun renameTo(context: Context, sink: Sink, newName: String): Sink {
-        if (sink.file != null) {
-            val target = File(sink.file.parentFile, newName)
-            if (sink.file.renameTo(target)) {
-                return Sink(fileUri(context, target), target) { target.outputStream() }
-            }
-            return sink
+    /** 校验已下载 APK 的包名、版本号（防降级）及签名证书 SHA-256（需与当前已安装应用同签且非空）。 */
+    private fun verifyDownloadedApk(context: Context, apkFile: File): Boolean {
+        val pm = context.packageManager
+        val flags = signingQueryFlags()
+        val archiveInfo = getPackageArchiveCompat(pm, apkFile.absolutePath, flags) ?: return false
+        if (archiveInfo.packageName != context.packageName) return false
+
+        val archiveVersionCode = PackageInfoCompat.getLongVersionCode(archiveInfo)
+        if (archiveVersionCode < BuildConfig.VERSION_CODE.toLong()) return false
+
+        val apkSigners = extractSignerDigests(archiveInfo, includeHistory = false)
+        if (apkSigners.isEmpty()) return false
+
+        val installedInfo = getInstalledPackageCompat(pm, context.packageName, flags) ?: return false
+        val installedSigners = extractSignerDigests(installedInfo, includeHistory = true)
+        return matchingSignerDigests(apkSigners, installedSigners)
+    }
+
+    private fun signingQueryFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
         }
+
+    private fun getPackageArchiveCompat(pm: PackageManager, path: String, flags: Int): PackageInfo? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageArchiveInfo(path, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(path, flags)
+        }
+
+    private fun getInstalledPackageCompat(pm: PackageManager, pkgName: String, flags: Int): PackageInfo? =
         runCatching {
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, newName)
-                put(MediaStore.MediaColumns.MIME_TYPE, APK_MIME)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(pkgName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(pkgName, flags)
             }
-            context.contentResolver.update(sink.uri, values, null, null)
+        }.getOrNull()
+
+    private fun extractSignerDigests(info: PackageInfo, includeHistory: Boolean): Set<String> {
+        val certs: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = info.signingInfo ?: return emptySet()
+            if (signingInfo.hasMultipleSigners()) {
+                signingInfo.apkContentsSigners
+            } else if (includeHistory && signingInfo.signingCertificateHistory != null) {
+                signingInfo.signingCertificateHistory
+            } else {
+                signingInfo.apkContentsSigners
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            info.signatures
         }
-        return sink
+        return certs.orEmpty().map { sha256Hex(it.toByteArray()) }.toSet()
     }
 
-    /** <29 时把 File 包装成可授予读取权限的 content:// Uri。 */
+    private fun sha256FileHex(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buf)
+                if (read <= 0) break
+                digest.update(buf, 0, read)
+            }
+        }
+        return digest.digest().toHexString(uppercase = false)
+    }
+
+    private fun apkStorageDir(context: Context): File =
+        (context.getExternalFilesDir("apk") ?: File(context.filesDir, "apk")).apply { mkdirs() }
+
+    private fun sanitizeApkFileName(rawName: String): String {
+        val safe = rawName.substringAfterLast('/').substringAfterLast('\\')
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .takeIf { it.endsWith(".apk", ignoreCase = true) }
+        return safe ?: "qzxy-lite-update.apk"
+    }
+
+    /** 把本地更新目录里的文件包装为可授权读取的 FileProvider content:// Uri。 */
     fun fileUri(context: Context, file: File): Uri =
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 
     /** 拉起系统安装器（应用内完成，不跳浏览器）。 */
+    @Suppress("DEPRECATION")
     fun install(context: Context, uri: Uri) {
         context.startActivity(
             Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
@@ -307,13 +439,14 @@ object UpdateManager {
         )
     }
 
-    /** 清理上一次下载残留（MediaStore 记录 + 文件）。 */
+    /** 清理已缓存/待安装的更新文件与元数据。 */
     fun clearPending(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.getString(KEY_PENDING_URI, null)?.let {
-            runCatching { context.contentResolver.delete(Uri.parse(it), null, null) }
+        val appContext = context.applicationContext
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        listOf(KEY_READY_FILE, KEY_PENDING_FILE).forEach { key ->
+            prefs.getString(key, null)?.let { path -> runCatching { File(path).delete() } }
         }
-        prefs.getString(KEY_PENDING_FILE, null)?.let { runCatching { File(it).delete() } }
-        prefs.edit().remove(KEY_PENDING_URI).remove(KEY_PENDING_FILE).apply()
+        apkStorageDir(appContext).listFiles()?.forEach { runCatching { it.delete() } }
+        prefs.edit().clear().apply()
     }
 }
