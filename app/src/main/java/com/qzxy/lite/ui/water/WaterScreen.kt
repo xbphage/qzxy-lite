@@ -1,5 +1,6 @@
 package com.qzxy.lite.ui.water
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,12 +29,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -171,6 +175,15 @@ fun WaterScreen(
         }
 
         val listState = rememberLazyListState()
+        val displayDevices = remember(state.devices, state.highlightedResNo) {
+            com.qzxy.lite.tmall.WaterDeviceOrder.pinToTop(state.devices, state.highlightedResNo)
+        }
+        LaunchedEffect(state.highlightedResNo, displayDevices.firstOrNull()?.resNo) {
+            val hi = state.highlightedResNo
+            if (!hi.isNullOrBlank() && displayDevices.firstOrNull()?.resNo == hi) {
+                listState.animateScrollToItem(0)
+            }
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -254,7 +267,7 @@ fun WaterScreen(
                     }
                 }
 
-                if (state.devices.isNotEmpty()) {
+                if (displayDevices.isNotEmpty()) {
                     item {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -268,10 +281,11 @@ fun WaterScreen(
                             }
                         }
                     }
-                    items(state.devices, key = { it.resNo }) { device ->
+                    items(displayDevices, key = { it.resNo }) { device ->
                         val activeOrder = state.activeOrder?.takeIf { it.resNo == device.resNo }
                         WaterDeviceCard(
                             device = device,
+                            highlighted = state.highlightedResNo == device.resNo,
                             processingText = state.status.takeIf { state.processingResNo == device.resNo },
                             error = state.deviceError?.takeIf { it.resNo == device.resNo }?.message,
                             unlocked = state.lastUnlockedResNo == device.resNo,
@@ -294,6 +308,7 @@ fun WaterScreen(
 @Composable
 private fun WaterDeviceCard(
     device: SavedWaterDevice,
+    highlighted: Boolean,
     processingText: String?,
     error: String?,
     unlocked: Boolean,
@@ -306,7 +321,14 @@ private fun WaterDeviceCard(
     Card(
         Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = if (highlighted) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlighted) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+        ),
     ) {
         Column(
             Modifier.padding(14.dp),
@@ -319,7 +341,25 @@ private fun WaterDeviceCard(
             ) {
                 StatusDot(if (unlocked) qz.hot else MaterialTheme.colorScheme.primary)
                 Column(Modifier.weight(1f)) {
-                    Text(device.name, style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(device.name, style = MaterialTheme.typography.titleMedium)
+                        if (highlighted) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = MaterialTheme.shapes.small,
+                            ) {
+                                Text(
+                                    "刚添加",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                    }
                     val meta = listOfNotNull(
                         "编号 ${device.resNo}",
                         device.location.takeIf { it.isNotBlank() },

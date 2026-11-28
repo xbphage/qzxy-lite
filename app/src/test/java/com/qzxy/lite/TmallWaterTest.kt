@@ -200,6 +200,8 @@ class TmallWaterTest {
         )
         assertEquals(listOf("d2", "d3", "d1"), WaterDeviceOrder.recent(list).map { it.resNo })
         assertEquals(listOf("d3", "d1", "d2"), WaterDeviceOrder.customIds(list, listOf("d3", "missing", "d1")))
+        assertEquals(listOf("d3", "d1", "d2"), WaterDeviceOrder.pinToTop(list, "d3").map { it.resNo })
+        assertEquals(listOf("d1", "d2", "d3"), WaterDeviceOrder.pinToTop(list, "not-found").map { it.resNo })
         assertEquals(WaterDeviceSortMode.RECENT, WaterDeviceOrder.mode("UNKNOWN"))
 
         val maxList = (1..WaterDeviceOrder.MAX_DEVICES).map { SavedWaterDevice("dev$it") }

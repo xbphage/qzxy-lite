@@ -41,6 +41,7 @@ data class WaterUiState(
     val processingResNo: String? = null,
     val deviceError: WaterDeviceError? = null,
     val lastUnlockedResNo: String? = null,
+    val highlightedResNo: String? = null,
     val activeOrder: ActiveWaterOrder? = null,
 )
 
@@ -122,7 +123,11 @@ class WaterViewModel(
                 }
                 _state.update {
                     if (added) {
-                        it.copy(status = "已添加 ${device.name}", error = null)
+                        it.copy(
+                            status = "已添加 ${device.name}，已置顶高亮，点击右侧即可解锁",
+                            error = null,
+                            highlightedResNo = device.resNo,
+                        )
                     } else {
                         it.copy(status = "", error = "已保存上限 30 台饮水机，请先在「管理设备」中移除旧设备")
                     }
@@ -166,6 +171,7 @@ class WaterViewModel(
                 _state.update {
                     it.copy(
                         lastUnlockedResNo = resNo,
+                        highlightedResNo = null,
                         activeOrder = ActiveWaterOrder(resNo, started.isvOrderId),
                         status = "",
                     )
@@ -225,6 +231,7 @@ class WaterViewModel(
             it.copy(
                 deviceError = it.deviceError?.takeUnless { err -> err.resNo == resNo },
                 lastUnlockedResNo = it.lastUnlockedResNo?.takeUnless { id -> id == resNo },
+                highlightedResNo = it.highlightedResNo?.takeUnless { id -> id == resNo },
                 activeOrder = it.activeOrder?.takeUnless { ord -> ord.resNo == resNo },
             )
         }
@@ -233,7 +240,15 @@ class WaterViewModel(
     fun logout() {
         if (_state.value.busy) return
         repo.logout()
-        _state.update { it.copy(status = "", error = null, activeOrder = null, lastUnlockedResNo = null) }
+        _state.update {
+            it.copy(
+                status = "",
+                error = null,
+                activeOrder = null,
+                lastUnlockedResNo = null,
+                highlightedResNo = null,
+            )
+        }
     }
 
     fun dismissError() {

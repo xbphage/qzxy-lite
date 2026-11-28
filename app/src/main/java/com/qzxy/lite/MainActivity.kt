@@ -79,12 +79,12 @@ private fun QzxyNavHost() {
     val tmallCookies by container.tmallSessionStore.cookies.collectAsState()
     val disclaimerAccepted by container.disclaimerStore.accepted.collectAsState()
     val navController = rememberNavController()
-    // 首次组合时决定起点：优先进入已登录的趣智首页；仅登录了天猫饮水则进入饮水页；否则进登录页。
+    // 首次组合时决定起点：仅登录了天猫饮水则进入饮水页；其余情况（已登录趣智或双平台均未登录）默认进入第 1 个 Tab 首页。
     val startDestination = remember {
         when {
             session?.isLoggedIn == true -> Routes.CAMPUS
             tmallCookies.isNotEmpty() -> Routes.WATER
-            else -> Routes.LOGIN
+            else -> Routes.CAMPUS
         }
     }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
@@ -105,17 +105,17 @@ private fun QzxyNavHost() {
 
     val scope = rememberCoroutineScope()
 
-    // 仅在访问需要趣智登录态的页面时校验并跳转登录页，允许仅登录天猫饮水用户自由使用“饮水/我的”及子页。
-    val hadQzxySession = remember { androidx.compose.runtime.mutableStateOf(session?.isLoggedIn == true) }
+    // 仅在停留在深层趣智子页（扫码/账单/洗浴）且未登录趣智时回退提示，不再清栈强跳主 Tab。
     LaunchedEffect(session?.isLoggedIn, currentRoute) {
         val qzxyLoggedIn = session?.isLoggedIn == true
-        val justLoggedOut = hadQzxySession.value && !qzxyLoggedIn
-        hadQzxySession.value = qzxyLoggedIn
         if (!qzxyLoggedIn &&
             currentRoute != null &&
-            (Routes.requiresQzxyAuth(currentRoute) || (justLoggedOut && tmallCookies.isEmpty()))
+            Routes.requiresDeepQzxyAuth(currentRoute)
         ) {
-            navController.navigate(Routes.LOGIN) { popUpTo(0) { inclusive = true } }
+            navController.navigate(Routes.LOGIN) {
+                popUpTo(currentRoute) { inclusive = true }
+                launchSingleTop = true
+            }
         } else if (qzxyLoggedIn) {
             container.authRepository.checkAndRenewSession()
         }
@@ -286,11 +286,19 @@ private fun QzxyNavHost() {
             composable(Routes.LOGIN) {
                 LoginScreen(
                     onLoginSuccess = {
-                        navController.navigate(Routes.CAMPUS) { popUpTo(0) { inclusive = true } }
+                        if (!navController.popBackStack()) {
+                            navController.navigate(Routes.CAMPUS) { popUpTo(0) { inclusive = true } }
+                        }
                     },
                     onOpenTmallWater = {
-                        navController.navigate(Routes.WATER) { popUpTo(0) { inclusive = true } }
+                        navController.popBackStack(Routes.LOGIN, inclusive = true)
+                        navController.navigate(Routes.WATER) {
+                            popUpTo(navController.graph.id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     },
+                    onBack = { goBack() },
                 )
             }
             composable(Routes.WATER) { entry ->
@@ -362,6 +370,7 @@ private fun QzxyNavHost() {
                         navController.navigate(route) { launchSingleTop = true }
                     },
                     onOpenScan = { navController.navigate(Routes.SCAN) { launchSingleTop = true } },
+                    onOpenLogin = { navController.navigate(Routes.LOGIN) { launchSingleTop = true } },
                 )
             }
 
@@ -384,6 +393,9 @@ private fun QzxyNavHost() {
                 MineScreen(
                     onOpenBillDetail = { navController.navigate(Routes.BILL_DETAIL) },
                     onCheckUpdate = { checkUpdate(notifyWhenLatest = true) },
+                    onOpenQzxyLogin = { navController.navigate(Routes.LOGIN) { launchSingleTop = true } },
+                    onOpenTmallPhoneLogin = { navController.navigate(Routes.WATER_PHONE_LOGIN) { launchSingleTop = true } },
+                    onOpenTmallTaobaoLogin = { navController.navigate(Routes.WATER_TAOBAO_LOGIN) { launchSingleTop = true } },
                     onLogout = {
                         scope.launch {
                             container.authRepository.logout()
@@ -417,7 +429,10 @@ private fun QzxyNavHost() {
             }
 
             composable(Routes.WALLET) {
-                WalletScreen(onBack = { goBack() })
+                WalletScreen(
+                    onBack = { goBack() },
+                    onOpenLogin = { navController.navigate(Routes.LOGIN) { launchSingleTop = true } },
+                )
             }
         }
     }
@@ -506,8 +521,7 @@ private object Routes {
     /** 底部菜单栏覆盖的主页面。 */
     val TAB_ROUTES = setOf(CAMPUS, WATER, WALLET, MINE)
 
-    /** 需要趣智校园登录态的页面。 */
-    fun requiresQzxyAuth(route: String): Boolean =
-        route == CAMPUS || route == SCAN || route == WALLET || route == BILL_DETAIL ||
-            route.startsWith("bath")
+    /** 需要趣智校园登录态的深层业务子页（主 Tab 内改用页内引导，不再强跳）。 */
+    fun requiresDeepQzxyAuth(route: String): Boolean =
+        route == SCAN || route == BILL_DETAIL || route.startsWith("bath")
 }

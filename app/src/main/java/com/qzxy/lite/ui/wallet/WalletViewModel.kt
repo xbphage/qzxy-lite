@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.qzxy.lite.data.repository.PayChannel
 import com.qzxy.lite.data.repository.RechargeTier
 import com.qzxy.lite.data.repository.WalletRepository
+import com.qzxy.lite.data.session.SessionStore
 import com.qzxy.lite.ui.common.toUserMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,7 +31,10 @@ data class WalletUiState(
 )
 
 /** 钱包：余额、充值档位/支付方式/满赠规则、充值下单（只到"拿到拉起参数"为止）。 */
-class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
+class WalletViewModel(
+    private val wallet: WalletRepository,
+    private val sessionStore: SessionStore,
+) : ViewModel() {
 
     private val _state = MutableStateFlow(WalletUiState())
     val state: StateFlow<WalletUiState> = _state.asStateFlow()
@@ -39,15 +43,31 @@ class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
     private var lastRefreshAtMs: Long = 0L
 
     init {
-        refresh(initial = true, force = true)
+        viewModelScope.launch {
+            sessionStore.session.collect { cur ->
+                if (cur?.isLoggedIn == true) {
+                    refresh(initial = true, force = true)
+                } else {
+                    refreshJob?.cancel()
+                    lastRefreshAtMs = 0L
+                    _state.update { WalletUiState() }
+                }
+            }
+        }
         viewModelScope.launch {
             wallet.latestBalance.filterNotNull().collect { latest ->
-                _state.update { it.copy(balance = latest) }
+                if (sessionStore.current()?.isLoggedIn == true) {
+                    _state.update { it.copy(balance = latest) }
+                }
             }
         }
     }
 
     fun refresh(initial: Boolean = false, force: Boolean = true) {
+        if (sessionStore.current()?.isLoggedIn != true) {
+            _state.update { WalletUiState() }
+            return
+        }
         val now = System.currentTimeMillis()
         if (!force && now - lastRefreshAtMs < SILENT_REFRESH_COOLDOWN_MS) return
         if (_state.value.loading || _state.value.refreshing) return

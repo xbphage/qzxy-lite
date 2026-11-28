@@ -34,16 +34,46 @@ class MineViewModel(
     val state: StateFlow<MineUiState> = _state.asStateFlow()
 
     init {
-        load()
+        viewModelScope.launch {
+            sessionStore.session.collect { cur ->
+                if (cur?.isLoggedIn == true) {
+                    load()
+                } else {
+                    _state.update {
+                        it.copy(
+                            school = "未登录",
+                            projectId = "",
+                            maskedPhone = "",
+                            refundRaw = null,
+                            loading = false,
+                            error = null,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun load() {
         val cur = sessionStore.current()
-        val phone = cur?.telephone.orEmpty()
+        if (cur?.isLoggedIn != true) {
+            _state.update {
+                it.copy(
+                    school = "未登录",
+                    projectId = "",
+                    maskedPhone = "",
+                    refundRaw = null,
+                    loading = false,
+                    error = null,
+                )
+            }
+            return
+        }
+        val phone = cur.telephone
         _state.update {
             it.copy(
                 maskedPhone = maskPhone(phone),
-                projectId = cur?.projectId.orEmpty(),
+                projectId = cur.projectId,
             )
         }
         viewModelScope.launch {
@@ -57,7 +87,7 @@ class MineViewModel(
                 }
                 .onFailure {
                     _state.update {
-                        if (it.school == "校园信息加载中…") {
+                        if (it.school == "校园信息加载中…" || it.school == "未登录") {
                             it.copy(school = if (it.projectId.isNotBlank()) "校园 ${it.projectId}" else "未绑定校园")
                         } else it
                     }

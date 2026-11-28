@@ -35,6 +35,13 @@ internal object WaterDeviceOrder {
 
     fun canRemember(devices: List<SavedWaterDevice>, resNo: String): Boolean =
         devices.size < MAX_DEVICES || devices.any { it.resNo == resNo }
+
+    /** 扫码或新添加设备时临时置顶高亮展示，不破坏底层持久化排序设置。 */
+    fun pinToTop(devices: List<SavedWaterDevice>, highlightedResNo: String?): List<SavedWaterDevice> {
+        if (highlightedResNo.isNullOrBlank()) return devices
+        val hit = devices.firstOrNull { it.resNo == highlightedResNo } ?: return devices
+        return listOf(hit) + devices.filterNot { it.resNo == highlightedResNo }
+    }
 }
 
 /**

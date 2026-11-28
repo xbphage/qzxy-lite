@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Visibility
@@ -68,6 +69,7 @@ import com.qzxy.lite.ui.theme.SteamWaves
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
     onOpenTmallWater: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val vm: LoginViewModel = viewModel {
@@ -93,6 +95,21 @@ fun LoginScreen(
                     .background(qz.deep),
             ) {
                 SteamWaves(Modifier.fillMaxSize(), color = qz.onDeep, baseAlpha = 0.20f)
+                if (onBack != null) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .statusBarsPadding()
+                            .padding(8.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "返回",
+                            tint = qz.onDeep,
+                        )
+                    }
+                }
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)

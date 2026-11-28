@@ -40,10 +40,24 @@ class CampusViewModel(
     private var usageJob: Job? = null
 
     init {
-        load(initial = true)
+        viewModelScope.launch {
+            sessionStore.session.collect { cur ->
+                if (cur?.isLoggedIn == true) {
+                    load(initial = true)
+                } else {
+                    loadJob?.cancel()
+                    usageJob?.cancel()
+                    _state.update { CampusUiState() }
+                }
+            }
+        }
     }
 
     fun load(initial: Boolean = false) {
+        if (sessionStore.current()?.isLoggedIn != true) {
+            _state.update { CampusUiState() }
+            return
+        }
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             val curProjectId = sessionStore.current()?.projectId.orEmpty()
@@ -112,6 +126,7 @@ class CampusViewModel(
 
     /** 首页可见期间的轻量对账（只查在用状态，不拉列表）。 */
     fun refreshUsageStatus() {
+        if (sessionStore.current()?.isLoggedIn != true) return
         val devices = _state.value.devices
         if (devices.isEmpty()) return
         usageJob?.cancel()

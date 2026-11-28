@@ -55,17 +55,29 @@ import com.qzxy.lite.ui.theme.SteamWaves
  */
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun WalletScreen(onBack: () -> Unit) {
+fun WalletScreen(
+    onBack: () -> Unit,
+    onOpenLogin: () -> Unit = {},
+) {
     val context = LocalContext.current
-    val vm: WalletViewModel = viewModel { WalletViewModel(context.appContainer.walletRepository) }
+    val vm: WalletViewModel = viewModel {
+        WalletViewModel(
+            context.appContainer.walletRepository,
+            context.appContainer.sessionStore,
+        )
+    }
     val state by vm.state.collectAsState()
+    val session by context.appContainer.sessionStore.session.collectAsState()
+    val isLoggedIn = session?.isLoggedIn == true
     val qz = LocalQzColors.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // 每次回到钱包页（含关阀后切回 Tab）自动静默刷新一次余额（带 5s 冷却），避免 restoreState 展示旧余额
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, isLoggedIn) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.refresh(initial = false, force = false)
+            if (isLoggedIn && event == Lifecycle.Event.ON_RESUME) {
+                vm.refresh(initial = false, force = false)
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -90,128 +102,162 @@ fun WalletScreen(onBack: () -> Unit) {
                 Text("钱包", style = MaterialTheme.typography.titleLarge)
             }
 
-            val walletScroll = rememberScrollState()
-            PullToRefreshBox(
-                isRefreshing = state.refreshing,
-                onRefresh = { vm.refresh() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-            ) {
+            if (!isLoggedIn) {
                 Column(
                     Modifier
-                        .fillMaxSize()
-                        .verticalScrollbar(walletScroll)
-                        .verticalScroll(walletScroll)
-                        .padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
                 ) {
-                    if (state.loading && state.balance == "--") {
-                        Row(
+                    androidx.compose.material3.Card(
+                        Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ),
+                    ) {
+                        Column(
+                            Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Text("登录趣智校园后可使用钱包", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "支持查询趣智水费余额、支付宝官方充值与账单流水；如仅需直饮水，请切换底部「饮水」标签。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Button(
+                                onClick = onOpenLogin,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("登录趣智校园")
+                            }
+                        }
+                    }
+                }
+            } else {
+                val walletScroll = rememberScrollState()
+                PullToRefreshBox(
+                    isRefreshing = state.refreshing,
+                    onRefresh = { vm.refresh() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScrollbar(walletScroll)
+                            .verticalScroll(walletScroll)
+                            .padding(horizontal = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        if (state.loading && state.balance == "--") {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 24.dp),
+                                horizontalArrangement = Arrangement.Center,
+                            ) { CircularProgressIndicator() }
+                        }
+
+                        // 余额面板：深潭底 + 蒸汽波 + 水表数字
+                        Box(
                             Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            horizontalArrangement = Arrangement.Center,
-                        ) { CircularProgressIndicator() }
-                    }
-
-                    // 余额面板：深潭底 + 蒸汽波 + 水表数字
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.large)
-                            .background(qz.deep)
-                            .padding(22.dp),
-                    ) {
-                        SteamWaves(
-                            Modifier.matchParentSize(),
-                            color = qz.onDeep,
-                            baseAlpha = 0.12f,
-                        )
-                        Column {
-                            Text(
-                                "钱包余额",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = qz.onDeep.copy(alpha = 0.72f),
-                            )
-                            Spacer(Modifier.size(6.dp))
-                            Text(
-                                "¥ ${state.balance}",
-                                style = MaterialTheme.typography.displayMedium,
+                                .clip(MaterialTheme.shapes.large)
+                                .background(qz.deep)
+                                .padding(22.dp),
+                        ) {
+                            SteamWaves(
+                                Modifier.matchParentSize(),
                                 color = qz.onDeep,
+                                baseAlpha = 0.12f,
                             )
-                            state.summaryHint?.let { hint ->
-                                Spacer(Modifier.size(10.dp))
+                            Column {
                                 Text(
-                                    hint,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = qz.onDeep.copy(alpha = 0.55f),
-                                    maxLines = 2,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    "钱包余额",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = qz.onDeep.copy(alpha = 0.72f),
                                 )
-                            }
-                        }
-                    }
-
-                    Text(
-                        "充值",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    // 充值档位来自 settlement/recharge/package/list（实测 5/10/20/30/50 元）；FlowRow 自动换行
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        val tiers = state.tiers
-                        val amounts = if (tiers.isEmpty()) listOf("5", "10", "20", "30", "50") else tiers.map { it.amount }
-                        amounts.forEach { yuan ->
-                            val selected = state.amount == yuan
-                            FilledTonalButton(
-                                onClick = { vm.onAmountChange(yuan) },
-                                colors = if (selected) {
-                                    androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary,
-                                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                                Spacer(Modifier.size(6.dp))
+                                Text(
+                                    "¥ ${state.balance}",
+                                    style = MaterialTheme.typography.displayMedium,
+                                    color = qz.onDeep,
+                                )
+                                state.summaryHint?.let { hint ->
+                                    Spacer(Modifier.size(10.dp))
+                                    Text(
+                                        hint,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = qz.onDeep.copy(alpha = 0.55f),
+                                        maxLines = 2,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                     )
-                                } else {
-                                    androidx.compose.material3.ButtonDefaults.filledTonalButtonColors()
-                                },
-                            ) {
-                                Text("¥${yuan.removeSuffix(".0")}")
+                                }
                             }
                         }
-                    }
 
-                    Button(
-                        onClick = { vm.recharge(PayChannel.ALIPAY, context) },
-                        enabled = !state.recharging,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 52.dp),
-                    ) { Text("支付宝充值") }
+                        Text(
+                            "充值",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
 
-                    if (state.recharging) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.size(10.dp))
-                            Text("正在下单并拉起官方支付…", style = MaterialTheme.typography.bodyMedium)
+                        // 充值档位来自 settlement/recharge/package/list（实测 5/10/20/30/50 元）；FlowRow 自动换行
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            val tiers = state.tiers
+                            val amounts = if (tiers.isEmpty()) listOf("5", "10", "20", "30", "50") else tiers.map { it.amount }
+                            amounts.forEach { yuan ->
+                                val selected = state.amount == yuan
+                                FilledTonalButton(
+                                    onClick = { vm.onAmountChange(yuan) },
+                                    colors = if (selected) {
+                                        androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                                        )
+                                    } else {
+                                        androidx.compose.material3.ButtonDefaults.filledTonalButtonColors()
+                                    },
+                                ) {
+                                    Text("¥${yuan.removeSuffix(".0")}")
+                                }
+                            }
                         }
+
+                        Button(
+                            onClick = { vm.recharge(PayChannel.ALIPAY, context) },
+                            enabled = !state.recharging,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp),
+                        ) { Text("支付宝充值") }
+
+                        if (state.recharging) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.size(10.dp))
+                                Text("正在下单并拉起官方支付…", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+
+                        state.message?.let { SoftNotice(it) }
+                        state.error?.let { ErrorNotice(it) }
+
+                        Text(
+                            "支付仅做「拉起官方支付」这一层；本项目仅用于本人账号操作与学习。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .padding(bottom = 24.dp),
+                        )
                     }
-
-                    state.message?.let { SoftNotice(it) }
-                    state.error?.let { ErrorNotice(it) }
-
-                    Text(
-                        "支付仅做「拉起官方支付」这一层；本项目仅用于本人账号操作与学习。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(bottom = 24.dp),
-                    )
                 }
             }
         }

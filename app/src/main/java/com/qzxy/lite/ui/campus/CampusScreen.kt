@@ -69,6 +69,7 @@ import kotlinx.coroutines.delay
 fun CampusScreen(
     onOpenBath: (sn: String, deviceSn: String, name: String, type: String) -> Unit,
     onOpenScan: () -> Unit,
+    onOpenLogin: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val vm: CampusViewModel = viewModel {
@@ -82,6 +83,7 @@ fun CampusScreen(
     }
     val state by vm.state.collectAsState()
     val session by context.appContainer.sessionStore.session.collectAsState()
+    val qzxyLoggedIn = session?.isLoggedIn == true
     val savedDevices by context.appContainer.savedDeviceStore.devices.collectAsState()
     // 洗澡会话快照：刚开阀返回首页时立即显示"使用中"，不必等服务端列表刷新。
     val bathSnapshots by context.appContainer.bathSessionStore.snapshots.collectAsState()
@@ -117,135 +119,171 @@ fun CampusScreen(
             )
             Text("水房", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "校园 ${session?.projectId?.ifBlank { "--" } ?: "--"} · 下拉刷新设备",
+                if (qzxyLoggedIn) {
+                    "校园 ${session?.projectId?.ifBlank { "--" } ?: "--"} · 下拉刷新设备"
+                } else {
+                    "未登录趣智校园"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        PullToRefreshBox(
-            isRefreshing = state.refreshing,
-            onRefresh = { vm.load() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-        ) {
-            val listState = rememberLazyListState()
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .lazyVerticalScrollbar(listState),
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        if (!qzxyLoggedIn) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
             ) {
-                item {
-                    Card(
-                        Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.medium,
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                Card(
+                    Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(
+                        Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        MenuRow(
-                            icon = { Icon(Icons.Rounded.QrCodeScanner, null, tint = MaterialTheme.colorScheme.primary) },
-                            label = "蓝牙找设备",
-                            onClick = onOpenScan,
+                        Text("登录趣智校园后即可管理水房设备", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "支持查看本校水房列表、蓝牙扫描脱机水表与洗浴控制；如仅使用校园直饮水，请直接切换底部「饮水」标签。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                }
-
-                state.error?.let { error ->
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ErrorNotice(error)
-                            TextButton(onClick = { vm.load(initial = true) }) { Text("重试") }
+                        androidx.compose.material3.Button(
+                            onClick = onOpenLogin,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("登录趣智校园")
                         }
                     }
                 }
-                state.message?.let { message ->
-                    item { SoftNotice(message) }
-                }
-                if (state.loading) {
+            }
+        } else {
+            PullToRefreshBox(
+                isRefreshing = state.refreshing,
+                onRefresh = { vm.load() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            ) {
+                val listState = rememberLazyListState()
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .lazyVerticalScrollbar(listState),
+                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                     item {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
-                            horizontalArrangement = Arrangement.Center,
-                        ) { CircularProgressIndicator() }
-                    }
-                }
-
-                val curProjectId = session?.projectId.orEmpty()
-                val scopedSaved = savedDevices.filter {
-                    it.projectId.isBlank() || curProjectId.isBlank() || it.projectId == curProjectId
-                }
-
-                item {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "浴室 / 热水器",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (scopedSaved.isNotEmpty()) {
-                            Text(
-                                "长按设备可移除",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        Card(
+                            Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.medium,
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        ) {
+                            MenuRow(
+                                icon = { Icon(Icons.Rounded.QrCodeScanner, null, tint = MaterialTheme.colorScheme.primary) },
+                                label = "蓝牙找设备",
+                                onClick = onOpenScan,
                             )
                         }
                     }
-                }
 
-                // 本地保存的设备优先显示（扫描识别后落盘）；无保存设备时才拉服务端列表
-                val displayDevices = if (scopedSaved.isNotEmpty()) {
-                    scopedSaved.map { d ->
-                        val primarySn = d.deviceSncode.takeIf { it.isNotBlank() } ?: d.snCode
-                        // 本地快照（刚开阀）与 ViewModel 对账结果都是"在用"的来源，任一命中即算在用。
-                        val snapshotBusy = bathSnapshots[primarySn]?.phase == BathPhase.SHOWERING ||
-                            bathSnapshots[d.snCode]?.phase == BathPhase.SHOWERING
-                        val reconciled = state.devices.firstOrNull {
-                            it.sn == primarySn || it.snCode == d.snCode
+                    state.error?.let { error ->
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ErrorNotice(error)
+                                TextButton(onClick = { vm.load(initial = true) }) { Text("重试") }
+                            }
                         }
-                        BathDevice(
-                            snCode = d.snCode,
-                            deviceSncode = d.deviceSncode.takeIf { it.isNotBlank() },
-                            devName = d.name,
-                            macAddress = d.mac,
-                            deviceType = d.type,
-                            signal = d.rssi,
-                            usingStatus = if (snapshotBusy || reconciled?.isBusy == true) "1" else null,
-                        )
                     }
-                } else {
-                    state.devices
-                }
-
-                items(displayDevices, key = { it.sn ?: it.macAddress ?: it.label }) { device ->
-                    val savedEntry = scopedSaved.firstOrNull { it.snCode == device.snCode }
-                    DeviceRow(
-                        device = device,
-                        signalText = device.signal?.takeIf { it != 0 }?.let { "信号 $it dBm" },
-                        onLongClick = savedEntry?.let { entry -> { pendingRemoveDevice = entry } },
-                    ) {
-                        // snCode 用于下单；deviceSncode 是原版同发的第二标识，缺失时为空（仓库层回退）。
-                        val sn = device.snCode?.takeIf { it.isNotBlank() }
-                            ?: device.deviceSncode?.takeIf { it.isNotBlank() }
-                            ?: device.macAddress?.takeIf { it.isNotBlank() }
-                            ?: ""
-                        val deviceSncode = device.deviceSncode?.takeIf { it.isNotBlank() } ?: ""
-                        if (sn.isBlank()) return@DeviceRow
-                        onOpenBath(sn, deviceSncode, device.label, device.deviceType ?: "NET")
+                    state.message?.let { message ->
+                        item { SoftNotice(message) }
                     }
-                }
+                    if (state.loading) {
+                        item {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 24.dp),
+                                horizontalArrangement = Arrangement.Center,
+                            ) { CircularProgressIndicator() }
+                        }
+                    }
 
-                if (displayDevices.isEmpty() && !state.loading && state.error == null) {
+                    val curProjectId = session?.projectId.orEmpty()
+                    val scopedSaved = savedDevices.filter {
+                        it.projectId.isBlank() || curProjectId.isBlank() || it.projectId == curProjectId
+                    }
+
                     item {
-                        QzEmptyState("还没有设备。下拉刷新，或用蓝牙扫描找设备。")
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "浴室 / 热水器",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (scopedSaved.isNotEmpty()) {
+                                Text(
+                                    "长按设备可移除",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                )
+                            }
+                        }
+                    }
+
+                    // 本地保存的设备优先显示（扫描识别后落盘）；无保存设备时才拉服务端列表
+                    val displayDevices = if (scopedSaved.isNotEmpty()) {
+                        scopedSaved.map { d ->
+                            val primarySn = d.deviceSncode.takeIf { it.isNotBlank() } ?: d.snCode
+                            // 本地快照（刚开阀）与 ViewModel 对账结果都是"在用"的来源，任一命中即算在用。
+                            val snapshotBusy = bathSnapshots[primarySn]?.phase == BathPhase.SHOWERING ||
+                                bathSnapshots[d.snCode]?.phase == BathPhase.SHOWERING
+                            val reconciled = state.devices.firstOrNull {
+                                it.sn == primarySn || it.snCode == d.snCode
+                            }
+                            BathDevice(
+                                snCode = d.snCode,
+                                deviceSncode = d.deviceSncode.takeIf { it.isNotBlank() },
+                                devName = d.name,
+                                macAddress = d.mac,
+                                deviceType = d.type,
+                                signal = d.rssi,
+                                usingStatus = if (snapshotBusy || reconciled?.isBusy == true) "1" else null,
+                            )
+                        }
+                    } else {
+                        state.devices
+                    }
+
+                    items(displayDevices, key = { it.sn ?: it.macAddress ?: it.label }) { device ->
+                        val savedEntry = scopedSaved.firstOrNull { it.snCode == device.snCode }
+                        DeviceRow(
+                            device = device,
+                            signalText = device.signal?.takeIf { it != 0 }?.let { "信号 $it dBm" },
+                            onLongClick = savedEntry?.let { entry -> { pendingRemoveDevice = entry } },
+                        ) {
+                            // snCode 用于下单；deviceSncode 是原版同发的第二标识，缺失时为空（仓库层回退）。
+                            val sn = device.snCode?.takeIf { it.isNotBlank() }
+                                ?: device.deviceSncode?.takeIf { it.isNotBlank() }
+                                ?: device.macAddress?.takeIf { it.isNotBlank() }
+                                ?: ""
+                            val deviceSncode = device.deviceSncode?.takeIf { it.isNotBlank() } ?: ""
+                            if (sn.isBlank()) return@DeviceRow
+                            onOpenBath(sn, deviceSncode, device.label, device.deviceType ?: "NET")
+                        }
+                    }
+
+                    if (displayDevices.isEmpty() && !state.loading && state.error == null) {
+                        item {
+                            QzEmptyState("还没有设备。下拉刷新，或用蓝牙扫描找设备。")
+                        }
                     }
                 }
             }
