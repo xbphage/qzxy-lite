@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -102,22 +103,17 @@ private fun QzxyNavHost() {
         }
     }
 
-    // 从后台切回前台时，主动检查并续期会话，确保短信验证码登录与密码登录均可无感长效保持
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && session?.isLoggedIn == true) {
-                scope.launch { container.authRepository.checkAndRenewSession() }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // —— 应用内静默更新：有已下好的包则直接复用（不重复拉取），否则发现新版后先静默下载并校验签名，就绪后弹窗提示安装。 ——
+    // —— 应用内静默更新：有已下好的包可立即复用（不重复拉取同版本），同时仍会向远端检查是否有更新版本（v1.0.6+）。 ——
     val appContext = LocalContext.current
+    val autoUpdateEnabled by UpdateManager.autoUpdateEnabledFlow(appContext).collectAsState()
     var readyUpdate by remember { mutableStateOf<ReadyUpdate?>(null) }
     var isCheckingUpdate by remember { mutableStateOf(false) }
+    var dismissedVersion by remember { mutableStateOf<String?>(null) }
+    var lastAutoCheckAtMs by remember { mutableStateOf(0L) }
+    var hasCompletedInitialAutoCheck by remember { mutableStateOf(false) }
+    val currentSession by rememberUpdatedState(session)
+    val currentDisclaimerAccepted by rememberUpdatedState(disclaimerAccepted)
+    val currentAutoUpdateEnabled by rememberUpdatedState(autoUpdateEnabled)
 
     fun checkUpdate(notifyWhenLatest: Boolean) {
         if (isCheckingUpdate) {
@@ -126,20 +122,31 @@ private fun QzxyNavHost() {
             }
             return
         }
+        if (notifyWhenLatest) {
+            dismissedVersion = null
+        }
         isCheckingUpdate = true
         scope.launch {
             try {
                 val cachedReady = UpdateManager.getVerifiedReadyUpdate(appContext, BuildConfig.VERSION_NAME)
-                if (!notifyWhenLatest && cachedReady != null) {
-                    // 启动自动检查命中已下载且签名校验通过的安装包：不再请求网络或重复下载，直接提示安装
+                if (!notifyWhenLatest && cachedReady != null && dismissedVersion != cachedReady.version) {
+                    // 先复用本地已校验完成的安装包提示，同时继续向远端核对是否有比 cachedReady 更新的版本
                     readyUpdate = cachedReady
-                    return@launch
                 }
 
                 val remote = UpdateManager.fetchLatest()
+                if (remote != null && !notifyWhenLatest) {
+                    lastAutoCheckAtMs = System.currentTimeMillis()
+                }
+
                 if (remote != null && UpdateManager.isNewer(remote.version, BuildConfig.VERSION_NAME)) {
                     if (cachedReady != null && !UpdateManager.isNewer(remote.version, cachedReady.version)) {
-                        readyUpdate = cachedReady
+                        if (notifyWhenLatest || dismissedVersion != cachedReady.version) {
+                            readyUpdate = cachedReady
+                        }
+                        return@launch
+                    }
+                    if (!notifyWhenLatest && dismissedVersion == remote.version) {
                         return@launch
                     }
                     if (notifyWhenLatest) {
@@ -153,7 +160,9 @@ private fun QzxyNavHost() {
                         UpdateManager.prepareUpdateSilently(appContext, remote)
                     }
                     prepared.onSuccess {
-                        readyUpdate = it
+                        if (notifyWhenLatest || currentAutoUpdateEnabled) {
+                            readyUpdate = it
+                        }
                     }.onFailure { err ->
                         if (notifyWhenLatest) {
                             Toast.makeText(
@@ -164,7 +173,9 @@ private fun QzxyNavHost() {
                         }
                     }
                 } else if (cachedReady != null) {
-                    readyUpdate = cachedReady
+                    if (notifyWhenLatest || dismissedVersion != cachedReady.version) {
+                        readyUpdate = cachedReady
+                    }
                 } else if (remote != null && notifyWhenLatest) {
                     Toast.makeText(appContext, "当前已是最新版本 ${BuildConfig.VERSION_NAME}", Toast.LENGTH_SHORT).show()
                 } else if (remote == null && notifyWhenLatest) {
@@ -176,9 +187,36 @@ private fun QzxyNavHost() {
         }
     }
 
-    LaunchedEffect(disclaimerAccepted) {
-        if (disclaimerAccepted && UpdateManager.isAutoUpdateEnabled(appContext)) {
-            delay(1_500)
+    val currentCheckUpdate by rememberUpdatedState<(Boolean) -> Unit> { checkUpdate(it) }
+
+    // 从后台切回前台时：1) 主动续期登录会话；2) 距上次远端检查超过间隔时自动重检更新，避免发现旧版本后不再检出更新版本
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (currentSession?.isLoggedIn == true) {
+                    scope.launch { container.authRepository.checkAndRenewSession() }
+                }
+                val now = System.currentTimeMillis()
+                if (hasCompletedInitialAutoCheck &&
+                    currentDisclaimerAccepted &&
+                    currentAutoUpdateEnabled &&
+                    now - lastAutoCheckAtMs >= AUTO_CHECK_INTERVAL_MS
+                ) {
+                    currentCheckUpdate(false)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(disclaimerAccepted, autoUpdateEnabled) {
+        if (disclaimerAccepted && autoUpdateEnabled) {
+            if (!hasCompletedInitialAutoCheck) {
+                delay(1_500)
+                hasCompletedInitialAutoCheck = true
+            }
             checkUpdate(notifyWhenLatest = false)
         }
     }
@@ -303,7 +341,10 @@ private fun QzxyNavHost() {
     // —— 更新就绪弹窗：安装包已提前静默下载并通过签名校验，点击直接安装。 ——
     readyUpdate?.let { ready ->
         AlertDialog(
-            onDismissRequest = { readyUpdate = null },
+            onDismissRequest = {
+                dismissedVersion = ready.version
+                readyUpdate = null
+            },
             title = { Text("新版本 ${ready.version} 已准备就绪") },
             text = {
                 Column(Modifier.fillMaxWidth()) {
@@ -344,11 +385,18 @@ private fun QzxyNavHost() {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { readyUpdate = null }) { Text("稍后") }
+                TextButton(
+                    onClick = {
+                        dismissedVersion = ready.version
+                        readyUpdate = null
+                    },
+                ) { Text("稍后") }
             },
         )
     }
 }
+
+private const val AUTO_CHECK_INTERVAL_MS = 15 * 60 * 1000L
 
 private object Routes {
     const val LOGIN = "login"
