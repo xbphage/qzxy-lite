@@ -3,7 +3,6 @@ package com.qzxy.lite.data.repository
 import com.qzxy.lite.core.dataOrThrow
 import com.qzxy.lite.data.api.CampusApi
 import com.qzxy.lite.data.api.DeviceApi
-import com.qzxy.lite.data.model.AreaItem
 import com.qzxy.lite.data.model.BathDevice
 import kotlinx.serialization.json.JsonObject
 
@@ -18,15 +17,6 @@ class CampusRepository(
 ) {
 
     suspend fun projectInfo(): JsonObject = campusApi.projectInfo().dataOrThrow()
-
-    /** 工单选位置用的层级列表（area→building→floor→room 级联）。 */
-    suspend fun workorderAreas(
-        markId: String? = null,
-        areaId: String? = null,
-        buildingId: String? = null,
-        floorId: String? = null,
-        roomId: String? = null,
-    ): List<AreaItem> = campusApi.areaListNew(markId, areaId, buildingId, floorId, roomId).dataOrThrow()
 
     /** 浴室/热水器列表（v3-api，areaId 空串=全部区域）。 */
     suspend fun bathList(): List<BathDevice> = campusApi.bathListByArea(areaId = "").dataOrThrow()

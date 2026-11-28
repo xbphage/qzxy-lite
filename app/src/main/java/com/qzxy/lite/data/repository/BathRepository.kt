@@ -2,9 +2,11 @@ package com.qzxy.lite.data.repository
 
 import android.util.Log
 import com.klcxkj.jni.JniUtils
+import com.qzxy.lite.BuildConfig
 import com.qzxy.lite.ble.BleWaterMeterClient
 import com.qzxy.lite.core.ApiException
 import com.qzxy.lite.core.ApiResponse
+import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.core.dataOrThrow
 import com.qzxy.lite.core.formatColonMac
 import com.qzxy.lite.core.successOrThrow
@@ -13,7 +15,6 @@ import com.qzxy.lite.data.api.OrderApi
 import com.qzxy.lite.data.model.BathDevice
 import com.qzxy.lite.data.model.BluetoothDownRateData
 import com.qzxy.lite.data.model.BluetoothUploadData
-import com.qzxy.lite.data.model.MoneyEstimate
 import com.qzxy.lite.data.model.OrderResult
 import com.qzxy.lite.data.session.SessionStore
 import java.util.concurrent.ConcurrentHashMap
@@ -33,11 +34,13 @@ class BathRepository(
     private val deviceApi: DeviceApi? = null,
 ) {
 
-    /** 记录最近一次 0x23 查询得到的水表动态随机数与协议版本，供关阀结算上报使用。 */
-    @Volatile
-    private var lastRandomNumber: String? = null
-    @Volatile
-    private var lastProtocolType: String? = null
+    private data class BleSessionParams(
+        val randomNumber: String,
+        val protocolType: String,
+    )
+
+    /** 按设备 MAC 隔离记录 0x23 查询到的随机数与协议版本，避免多设备切换参数串台。 */
+    private val bleParamsByMac = ConcurrentHashMap<String, BleSessionParams>()
 
     /** 云端设备元数据缓存（key = `projectId:COLON_MAC`），避免重复开阀/绑定多次查 `device/info/mac`。 */
     private val cloudDeviceCache = ConcurrentHashMap<String, BathDevice>()
@@ -84,10 +87,6 @@ class BathRepository(
     suspend fun consumeResult(orderNo: String): JsonObject =
         orderApi.consumeResult(orderNo = orderNo).dataOrThrow()
 
-    /** 预估消费（原版流程未用，备用）。 */
-    suspend fun estimate(snCode: String): MoneyEstimate =
-        orderApi.perMoney(snCode = snCode).dataOrThrow()
-
     // ==================== 2. 蓝牙脱机水表链路 ====================
 
     /**
@@ -114,17 +113,22 @@ class BathRepository(
         try {
             onBleStatus("正在读取水表状态与认证参数...")
             val queryResult = client.queryDevice().getOrThrow()
-            Log.d(TAG, "BLE Query success: $queryResult")
+            if (BuildConfig.DEBUG) Log.d(TAG, "BLE Query success: ${queryResult.deviceMac}")
+            DiagLog.d("bath", "BLE Query ok mac=${queryResult.deviceMac} proto=${queryResult.protocolType}")
 
             onBleStatus("正在向云端获取设备信息...")
             // 官方链路要求提交云端登记的 DevID（device/info/mac），不可传水表 0x23 的 EEPROM 物理 ID，否则报 519。
             val cloudDevice = resolveCloudDevice(queryResult.deviceMac, deviceMac)
             val cloudDevId = cloudDevice?.cloudDeviceId
             val deviceIdStr = if (!cloudDevId.isNullOrBlank()) {
-                Log.d(TAG, "Using cloud registered DevID: $cloudDevId (BLE EEPROM ID was ${queryResult.deviceId})")
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "Using cloud registered DevID: $cloudDevId (BLE EEPROM ID was ${queryResult.deviceId})")
+                }
                 cloudDevId
             } else {
-                Log.w(TAG, "Cloud DevID not found for ${queryResult.deviceMac}, falling back to BLE EEPROM ID: ${queryResult.deviceId}")
+                if (BuildConfig.DEBUG) {
+                    Log.w(TAG, "Cloud DevID not found for ${queryResult.deviceMac}, falling back to BLE EEPROM ID: ${queryResult.deviceId}")
+                }
                 queryResult.deviceId.toString()
             }
 
@@ -134,10 +138,12 @@ class BathRepository(
 
             onBleStatus("正在向云端申请开阀授权指令...")
             val macWithoutColons = queryResult.deviceMac.replace(":", "").uppercase()
+            val macKey = formatColonMac(queryResult.deviceMac)
             val randomNumber = queryResult.randomNumber
-            lastRandomNumber = randomNumber
             val protocolType = queryResult.protocolType
-            lastProtocolType = protocolType
+            val sessionParams = BleSessionParams(randomNumber = randomNumber, protocolType = protocolType)
+            bleParamsByMac[macKey] = sessionParams
+            bleParamsByMac[formatColonMac(deviceMac)] = sessionParams
             val macType = queryResult.macType
 
             val signature = JniUtils.sign(
@@ -227,16 +233,23 @@ class BathRepository(
         val client = bleClient ?: throw IllegalStateException("BLE client not initialized")
         val session = sessionStore?.current() ?: throw IllegalStateException("未登录，请先登录")
         val phone = session.telephone
+        val macKey = formatColonMac(deviceMac)
 
         try {
             if (!client.isConnected) {
                 onBleStatus("正在重新连接水表蓝牙...")
                 client.connect(deviceMac).getOrThrow()
             }
-            if (lastRandomNumber == null) {
+            var sessionParams = bleParamsByMac[macKey]
+            if (sessionParams == null) {
                 runCatching { client.queryDevice().getOrThrow() }.onSuccess { q ->
-                    lastRandomNumber = q.randomNumber
-                    lastProtocolType = q.protocolType
+                    sessionParams = BleSessionParams(
+                        randomNumber = q.randomNumber,
+                        protocolType = q.protocolType,
+                    ).also { p ->
+                        bleParamsByMac[macKey] = p
+                        bleParamsByMac[formatColonMac(q.deviceMac)] = p
+                    }
                 }
             }
 
@@ -245,7 +258,8 @@ class BathRepository(
 
             onBleStatus("正在读取水表消费账单...")
             val record = client.collectData().getOrThrow()
-            Log.d(TAG, "BLE Collect record: $record")
+            if (BuildConfig.DEBUG) Log.d(TAG, "BLE Collect record pulses=${record.pulses} idx=${record.recordIndex}")
+            DiagLog.d("bath", "BLE Collect ok pulses=${record.pulses} idx=${record.recordIndex}")
 
             onBleStatus("正在上传水表账单并结算扣费...")
             val signature = JniUtils.sign(
@@ -256,10 +270,10 @@ class BathRepository(
                     "xfData" to record.xfDataHex,
                 ),
             )
-            val uploadRandomNumber = lastRandomNumber ?: "00000000"
-            val protocolType = lastProtocolType?.takeIf { it.isNotBlank() } ?: "10"
+            val uploadRandomNumber = sessionParams?.randomNumber ?: "00000000"
+            val protocolType = sessionParams?.protocolType?.takeIf { it.isNotBlank() } ?: "10"
 
-            val uploadResp = callWithOfflineFallback(
+            val uploadData = callWithOfflineFallback(
                 actionName = "bluetoothUploadData",
                 primary = {
                     orderApi.bluetoothUploadData(
@@ -277,8 +291,9 @@ class BathRepository(
                         signature = signature,
                     )
                 },
-            )
+            ).dataOrThrow()
 
+            // 务必先确保云端上传与扣费校验成功，再向水表确认入库（0x86），防止结算失败却误清表端未传记录
             onBleStatus("正在同步水表确认状态...")
             runCatching {
                 client.confirmStorage(
@@ -289,13 +304,14 @@ class BathRepository(
                     recordIndex = record.recordIndex,
                 )
             }
+            bleParamsByMac.remove(macKey)
 
             if (!orderNo.isNullOrBlank()) {
                 runCatching { orderApi.bathroomOrderClosed(orderNo) }
             }
 
             onBleStatus("结账完成")
-            return uploadResp.dataOrThrow()
+            return uploadData
         } finally {
             client.disconnect()
         }
@@ -330,18 +346,30 @@ class BathRepository(
             }
         }.distinct()
 
-    private suspend fun <T> callWithOfflineFallback(
+    internal suspend fun <T> callWithOfflineFallback(
         actionName: String,
         primary: suspend () -> ApiResponse<T>,
         offline: suspend () -> ApiResponse<T>,
         onError: (ApiResponse<T>) -> Nothing = { r -> throw ApiException(r.errorCode, r.effectiveMessage) },
-    ): ApiResponse<T> = try {
-        val r = primary()
-        if (r.errorCode == 0 && r.data != null) r else onError(r)
-    } catch (e: Exception) {
-        if (!shouldFallbackToOffline(e)) throw e
-        Log.w(TAG, "$actionName network/gateway failed (${e.message}), trying offline endpoint")
-        offline()
+    ): ApiResponse<T> {
+        val verify: (ApiResponse<T>) -> ApiResponse<T> = { r ->
+            if (r.errorCode == 0 && r.data != null) r else onError(r)
+        }
+        return try {
+            verify(primary())
+        } catch (e: Exception) {
+            if (!shouldFallbackToOffline(e)) throw e
+            DiagLog.d("bath", "$actionName primary failed (${e.message}), trying offline")
+            if (BuildConfig.DEBUG) {
+                runCatching { Log.w(TAG, "$actionName network/gateway failed (${e.message}), trying offline endpoint") }
+            }
+            verify(offline())
+        }
+    }
+
+    fun clearCaches() {
+        cloudDeviceCache.clear()
+        bleParamsByMac.clear()
     }
 
     fun disconnectBle() {

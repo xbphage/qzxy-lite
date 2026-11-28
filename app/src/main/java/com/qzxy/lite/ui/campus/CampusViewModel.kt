@@ -7,7 +7,9 @@ import com.qzxy.lite.data.model.BathDevice
 import com.qzxy.lite.data.repository.AuthRepository
 import com.qzxy.lite.data.repository.BathRepository
 import com.qzxy.lite.data.repository.CampusRepository
+import com.qzxy.lite.data.session.SessionStore
 import com.qzxy.lite.ui.common.toUserMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,23 +30,30 @@ class CampusViewModel(
     private val auth: AuthRepository,
     private val savedDeviceStore: SavedDeviceStore,
     private val bath: BathRepository,
+    private val sessionStore: SessionStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CampusUiState())
     val state: StateFlow<CampusUiState> = _state.asStateFlow()
+
+    private var loadJob: Job? = null
+    private var usageJob: Job? = null
 
     init {
         load(initial = true)
     }
 
     fun load(initial: Boolean = false) {
-        viewModelScope.launch {
-            // 本地已保存的设备优先：首页始终可见，不依赖服务端列表（服务端列表接口对
-            // v3 会话实测会报"设备不存在"）。下拉刷新时若本地有设备则同时尝试服务端列表。
-            val saved = savedDeviceStore.devices.value
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            val curProjectId = sessionStore.current()?.projectId.orEmpty()
+            val saved = savedDeviceStore.devices.value.filter {
+                it.projectId.isBlank() || curProjectId.isBlank() || it.projectId == curProjectId
+            }
             val savedDevices = saved.map { d ->
                 BathDevice(
                     snCode = d.snCode,
+                    deviceSncode = d.deviceSncode.takeIf { it.isNotBlank() },
                     devName = d.name,
                     macAddress = d.mac,
                     deviceType = d.type,
@@ -60,8 +69,8 @@ class CampusViewModel(
                     )
                 }
                 // 本地设备没有 usingStatus，向服务端逐台对账一次（307=使用中）。
-                // 独立协程：对账慢不能拖住下拉刷新/首屏。
-                viewModelScope.launch { refreshUsage(savedDevices) }
+                usageJob?.cancel()
+                usageJob = viewModelScope.launch { refreshUsage(savedDevices) }
                 if (initial) return@launch
             }
             _state.update {
@@ -105,7 +114,14 @@ class CampusViewModel(
     fun refreshUsageStatus() {
         val devices = _state.value.devices
         if (devices.isEmpty()) return
-        viewModelScope.launch { refreshUsage(devices) }
+        usageJob?.cancel()
+        usageJob = viewModelScope.launch { refreshUsage(devices) }
+    }
+
+    /** 移除本地已保存的水表设备。 */
+    fun removeSavedDevice(snCode: String) {
+        savedDeviceStore.remove(snCode)
+        _state.update { st -> st.copy(devices = st.devices.filterNot { it.snCode == snCode || it.sn == snCode }) }
     }
 
     /** 更换校园（换 projectId 后重拉配置）。 */

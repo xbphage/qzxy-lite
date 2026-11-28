@@ -9,9 +9,12 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.qzxy.lite.BuildConfig
+import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.core.formatColonMac
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -25,7 +28,6 @@ import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 /**
@@ -59,8 +61,8 @@ class BleWaterMeterClient(
     private var connectionDeferred: CompletableDeferred<Boolean>? = null
     private var readyDeferred: CompletableDeferred<Boolean>? = null
 
-    // 累加接收缓冲区
-    private val rxBuffer = ByteArrayOutputStream()
+    // 累加接收缓冲区（拆包 + 去噪 + 上限保护）
+    private val framingBuffer = BleLineFramingBuffer()
     private val receivedFrames = MutableSharedFlow<String>(
         extraBufferCapacity = 16,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -69,7 +71,8 @@ class BleWaterMeterClient(
     private val gattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
+            if (gatt !== bluetoothGatt) return
+            if (BuildConfig.DEBUG) Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connectionDeferred?.complete(true)
                 gatt.discoverServices()
@@ -82,7 +85,8 @@ class BleWaterMeterClient(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            Log.d(TAG, "onServicesDiscovered status=$status")
+            if (gatt !== bluetoothGatt) return
+            if (BuildConfig.DEBUG) Log.d(TAG, "onServicesDiscovered status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 readyDeferred?.complete(false)
                 return
@@ -120,13 +124,14 @@ class BleWaterMeterClient(
                     readyDeferred?.complete(true)
                 }
             } else {
-                Log.w(TAG, "Suitable BLE services/characteristics not found!")
+                if (BuildConfig.DEBUG) Log.w(TAG, "Suitable BLE services/characteristics not found!")
                 readyDeferred?.complete(false)
             }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            Log.d(TAG, "onDescriptorWrite status=$status")
+            if (gatt !== bluetoothGatt) return
+            if (BuildConfig.DEBUG) Log.d(TAG, "onDescriptorWrite status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 readyDeferred?.complete(true)
             } else {
@@ -136,6 +141,7 @@ class BleWaterMeterClient(
 
         @Deprecated("Deprecated in Java")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (gatt !== bluetoothGatt) return
             @Suppress("DEPRECATION")
             onRxBytes(characteristic.value)
         }
@@ -145,25 +151,18 @@ class BleWaterMeterClient(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            if (gatt !== bluetoothGatt) return
             onRxBytes(value)
         }
     }
 
     private fun onRxBytes(bytes: ByteArray?) {
         if (bytes == null || bytes.isEmpty()) return
-        synchronized(rxBuffer) {
-            rxBuffer.write(bytes)
-            val current = rxBuffer.toByteArray()
-            val text = String(current, Charsets.US_ASCII)
-            val newlineIdx = text.indexOf('\n')
-            if (newlineIdx != -1) {
-                val line = text.substring(0, newlineIdx + 1)
-                val rest = text.substring(newlineIdx + 1).toByteArray(Charsets.US_ASCII)
-                rxBuffer.reset()
-                rxBuffer.write(rest)
-                Log.d(TAG, "RX Frame: ${line.trim()}")
-                receivedFrames.tryEmit(line)
-            }
+        val lines = synchronized(framingBuffer) { framingBuffer.append(bytes) }
+        for (line in lines) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "RX Frame cmd=${line.take(20).trim()}")
+            DiagLog.d("ble", "RX ${line.trim()}")
+            receivedFrames.tryEmit(line)
         }
     }
 
@@ -176,7 +175,7 @@ class BleWaterMeterClient(
         if (!adapter.isEnabled) return Result.failure(IllegalStateException("蓝牙未开启，请先打开手机蓝牙"))
 
         val cleanMac = formatColonMac(deviceMac)
-        Log.d(TAG, "Connecting to BLE water meter: $cleanMac")
+        if (BuildConfig.DEBUG) Log.d(TAG, "Connecting to BLE water meter: $cleanMac")
 
         val device: BluetoothDevice = try {
             adapter.getRemoteDevice(cleanMac)
@@ -185,8 +184,10 @@ class BleWaterMeterClient(
         }
 
         cleanup()
-        connectionDeferred = CompletableDeferred()
-        readyDeferred = CompletableDeferred()
+        val connDef = CompletableDeferred<Boolean>()
+        val readyDef = CompletableDeferred<Boolean>()
+        connectionDeferred = connDef
+        readyDeferred = readyDef
 
         val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -196,7 +197,7 @@ class BleWaterMeterClient(
         bluetoothGatt = gatt
 
         val ready = withTimeoutOrNull(timeoutMs) {
-            readyDeferred?.await()
+            readyDef.await()
         }
 
         if (ready == true) {
@@ -208,7 +209,7 @@ class BleWaterMeterClient(
     }
 
     /**
-     * 写入分包数据（20 字节切片）。
+     * 写入分包数据（20 字节切片），并对控制器忙状态做短重试。
      */
     @SuppressLint("MissingPermission")
     private suspend fun writeRaw(data: ByteArray) {
@@ -222,27 +223,37 @@ class BleWaterMeterClient(
             val chunk = data.copyOfRange(offset, end)
             offset = end
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(
-                    char,
-                    chunk,
-                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                @Suppress("DEPRECATION")
-                char.value = chunk
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(char)
+            var sent = false
+            for (attempt in 0 until 3) {
+                val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(
+                        char,
+                        chunk,
+                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+                    ) == BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    @Suppress("DEPRECATION")
+                    char.value = chunk
+                    @Suppress("DEPRECATION")
+                    gatt.writeCharacteristic(char)
+                }
+                if (ok) {
+                    sent = true
+                    break
+                }
+                delay(25)
             }
+            if (!sent) throw IllegalStateException("蓝牙写入特征值失败（写入忙或连接已断开）")
             delay(20)
         }
     }
 
     /**
      * 发送命令并同步订阅期待的响应帧。
-     * 先用 UNDISPATCHED 启动订阅再发送数据，避免 MCU 在写包间隔内快速回包导致漏帧。
+     * 先用 UNDISPATCHED 启动订阅再发送数据，避免 MCU 在写包间隔内快速回包导致漏帧；
+     * 同时强制校验帧校验和（checksumValid），防止无线干扰坏帧污染业务解析。
      */
     private suspend fun sendAndAwaitFrame(
         cmd: Int,
@@ -254,7 +265,7 @@ class BleWaterMeterClient(
             withTimeoutOrNull(timeoutMs) {
                 receivedFrames
                     .mapNotNull { BleFrameCodec.decodeFrame(it) }
-                    .first { it.cmd == cmd }
+                    .first { it.cmd == cmd && it.checksumValid }
             }
         }
         try {
@@ -367,14 +378,18 @@ class BleWaterMeterClient(
 
     @SuppressLint("MissingPermission")
     private fun cleanup() {
-        try {
-            bluetoothGatt?.disconnect()
-            bluetoothGatt?.close()
-        } catch (_: Exception) {}
+        val oldGatt = bluetoothGatt
+        // 先清空当前引用再关闭旧 GATT，避免同步回调进入产生递归 cleanup
         bluetoothGatt = null
         writeChar = null
         notifyChar = null
-        synchronized(rxBuffer) { rxBuffer.reset() }
+        connectionDeferred?.cancel()
+        connectionDeferred = null
+        readyDeferred?.cancel()
+        readyDeferred = null
+        runCatching { oldGatt?.disconnect() }
+        runCatching { oldGatt?.close() }
+        synchronized(framingBuffer) { framingBuffer.clear() }
     }
 
     companion object {

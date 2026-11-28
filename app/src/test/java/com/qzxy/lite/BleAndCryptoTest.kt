@@ -2,12 +2,14 @@ package com.qzxy.lite
 
 import com.klcxkj.jni.JniUtils
 import com.qzxy.lite.ble.BleFrameCodec
+import com.qzxy.lite.ble.BleLineFramingBuffer
 import com.qzxy.lite.core.formatColonMac
 import com.qzxy.lite.core.hexToByteArray
 import com.qzxy.lite.core.md5Hex
 import com.qzxy.lite.core.toHexString
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -91,5 +93,46 @@ class BleAndCryptoTest {
         val expected = md5Hex("${md5Hex(expectedRaw)}&key=sign-kailu-855c74a88b8b494187c99b08b8c9a744")
         assertEquals(expected, JniUtils.sign(loginCode, params))
         assertEquals("sign-kailu=", JniUtils.getSk())
+    }
+
+    @Test
+    fun `BleLineFramingBuffer splits coalesced frames, discards prefix noise, and caps oversized buffers`() {
+        val buf = BleLineFramingBuffer(maxBufferBytes = 64)
+        val f1 = String(BleFrameCodec.encodeCommand(BleFrameCodec.CMD_QUERY_DEVICE), Charsets.US_ASCII)
+        val f2 = String(BleFrameCodec.encodeCommand(BleFrameCodec.CMD_CLOSE_VALVE), Charsets.US_ASCII)
+
+        // 噪声前缀 + 粘包两帧 + 第三帧前半截
+        val halfF1 = f1.take(8)
+        val restF1 = f1.substring(8)
+        val combined = ("NOISE" + f1 + f2 + halfF1).toByteArray(Charsets.US_ASCII)
+        assertEquals(listOf(f1, f2), buf.append(combined))
+        assertEquals(listOf(f1), buf.append(restF1.toByteArray(Charsets.US_ASCII)))
+
+        // 超过缓冲区上限的无换行噪声不会无限增长
+        val garbage = ByteArray(100) { 'A'.code.toByte() }
+        assertTrue(buf.append(garbage).isEmpty())
+        assertEquals(listOf(f2), buf.append(f2.toByteArray(Charsets.US_ASCII)))
+    }
+
+    @Test
+    fun `BleFrameCodec flags corrupted checksum and encodes 0x86 confirm storage`() {
+        val valid = String(BleFrameCodec.encodeCommand(BleFrameCodec.CMD_CLOSE_VALVE), Charsets.US_ASCII)
+        val corrupted = valid.dropLast(3) + "ff16\n"
+        val decodedBad = BleFrameCodec.decodeFrame(corrupted)
+        assertNotNull(decodedBad)
+        assertFalse(decodedBad!!.checksumValid)
+
+        val confirmBytes = BleFrameCodec.encodeConfirmStorage(
+            consumeDateHex = "261128123000",
+            projectId = 201,
+            accountId = 21864,
+            deviceId = 1941,
+            recordIndex = 7,
+        )
+        val decodedConfirm = BleFrameCodec.decodeFrame(String(confirmBytes, Charsets.US_ASCII))
+        assertNotNull(decodedConfirm)
+        assertTrue(decodedConfirm!!.checksumValid)
+        assertEquals(BleFrameCodec.CMD_CONFIRM_STORAGE, decodedConfirm.cmd)
+        assertEquals(22, decodedConfirm.payload.size)
     }
 }

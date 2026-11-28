@@ -25,11 +25,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.BufferedInputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 
 /** GitHub Release 元数据（只取更新所需字段）。 */
 data class UpdateInfo(
@@ -211,25 +210,33 @@ object UpdateManager {
                     .url(candidate)
                     .header("Accept", "application/vnd.github+json")
                     .header("User-Agent", "qzxy-lite-Android")
+                    .header("Cache-Control", "no-cache")
+                    .header("Pragma", "no-cache")
                     .build()
                 client.newCall(req).execute().use { rsp ->
                     if (!rsp.isSuccessful) return@runCatching null
                     val text = rsp.body?.string().orEmpty()
                     if (text.isBlank()) return@runCatching null
                     val obj = json.parseToJsonElement(text).jsonObject
-                    val apk = obj["assets"]?.jsonArray.orEmpty()
-                        .map { it.jsonObject }
-                        .firstOrNull { (it["name"]?.jsonPrimitive?.content ?: "").endsWith(".apk", true) }
+                    val candidates = obj["assets"]?.jsonArray.orEmpty().map { assetEl ->
+                        val assetObj = assetEl.jsonObject
+                        ApkAssetCandidate(
+                            name = assetObj["name"]?.jsonPrimitive?.content.orEmpty(),
+                            downloadUrl = stripKnownProxyPrefix(
+                                assetObj["browser_download_url"]?.jsonPrimitive?.content.orEmpty(),
+                            ),
+                            size = assetObj["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                        )
+                    }
+                    val apk = UpdateDecision.selectPreferredApkAsset(candidates)
                         ?: return@runCatching null
                     UpdateInfo(
                         version = obj["tag_name"]?.jsonPrimitive?.content.orEmpty(),
                         title = obj["name"]?.jsonPrimitive?.content.orEmpty(),
                         notes = obj["body"]?.jsonPrimitive?.content.orEmpty(),
-                        apkUrl = stripKnownProxyPrefix(
-                            apk["browser_download_url"]?.jsonPrimitive?.content.orEmpty(),
-                        ),
-                        apkName = apk["name"]?.jsonPrimitive?.content.orEmpty(),
-                        apkSize = apk["size"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                        apkUrl = apk.downloadUrl,
+                        apkName = apk.name,
+                        apkSize = apk.size,
                     )
                 }
             }.getOrNull()
@@ -326,22 +333,32 @@ object UpdateManager {
     }
 
     private fun normalizeToApkFile(tmpFile: File, targetFile: File) {
-        val entryNames = mutableListOf<String>()
-        runCatching {
-            tmpFile.inputStream().use { ins ->
-                ZipInputStream(BufferedInputStream(ins)).use { zis ->
-                    var e = zis.nextEntry
-                    while (e != null) {
-                        entryNames.add(e.name)
-                        e = zis.nextEntry
+        val apkEntryName: String?
+        val isDirectApk = try {
+            // 通过 ZipFile 读取中央目录（O(1)），避免流式全包扫描两遍大文件
+            ZipFile(tmpFile).use { zip ->
+                if (zip.getEntry("AndroidManifest.xml") != null) {
+                    apkEntryName = null
+                    true
+                } else {
+                    val entries = zip.entries()
+                    var found: String? = null
+                    while (entries.hasMoreElements()) {
+                        val name = entries.nextElement().name
+                        if (name.endsWith(".apk", ignoreCase = true)) {
+                            found = name
+                            break
+                        }
                     }
+                    apkEntryName = found
+                    false
                 }
             }
-        }.onFailure {
-            throw IllegalStateException("安装包格式损坏（非有效压缩包）", it)
+        } catch (t: Throwable) {
+            throw IllegalStateException("安装包格式损坏（非有效压缩包）", t)
         }
 
-        if (entryNames.any { it == "AndroidManifest.xml" }) {
+        if (isDirectApk) {
             targetFile.delete()
             if (!tmpFile.renameTo(targetFile)) {
                 tmpFile.copyTo(targetFile, overwrite = true)
@@ -350,16 +367,12 @@ object UpdateManager {
             return
         }
 
-        val apkEntry = entryNames.firstOrNull { it.endsWith(".apk", true) }
-            ?: throw IllegalStateException("下载内容不是有效的安装包")
-
+        val entryName = apkEntryName ?: throw IllegalStateException("下载内容不是有效的安装包")
         targetFile.delete()
-        tmpFile.inputStream().use { ins ->
-            ZipInputStream(BufferedInputStream(ins)).use { zis ->
-                var e = zis.nextEntry
-                while (e != null && e.name != apkEntry) e = zis.nextEntry
-                if (e == null) throw IllegalStateException("安装包解压失败")
-                targetFile.outputStream().use { output -> zis.copyTo(output) }
+        ZipFile(tmpFile).use { zip ->
+            val entry = zip.getEntry(entryName) ?: throw IllegalStateException("安装包解压失败")
+            zip.getInputStream(entry).use { input ->
+                targetFile.outputStream().use { output -> input.copyTo(output, bufferSize = 64 * 1024) }
             }
         }
         tmpFile.delete()

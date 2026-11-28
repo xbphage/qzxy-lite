@@ -17,21 +17,33 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class SessionStore(context: Context) {
 
-    private val prefs: SharedPreferences = try {
+    private val prefs: SharedPreferences = openOrRebuildEncryptedPrefs(context)
+
+    private fun createEncryptedPrefs(context: Context): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             "qzxy_lite_session",
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
-    } catch (e: Exception) {
-        // Keystore 损坏等极端场景：清掉旧文件重建，避免死循环崩溃。
-        context.deleteSharedPreferences("qzxy_lite_session")
-        throw IllegalStateException("会话加密存储初始化失败，已清除旧存储：${e.message}", e)
+    }
+
+    private fun openOrRebuildEncryptedPrefs(context: Context): SharedPreferences {
+        return try {
+            createEncryptedPrefs(context)
+        } catch (e: Exception) {
+            // Keystore 损坏或系统备份还原后密钥不匹配：清空旧加密文件并重新初始化，避免反复闪退
+            runCatching { context.deleteSharedPreferences("qzxy_lite_session") }
+            try {
+                createEncryptedPrefs(context)
+            } catch (e2: Exception) {
+                throw IllegalStateException("会话加密存储初始化及重建均失败：${e2.message}", e2)
+            }
+        }
     }
 
     private val _session = MutableStateFlow(readSession())
@@ -39,11 +51,6 @@ class SessionStore(context: Context) {
 
     private val _wfwapiLoginCode = MutableStateFlow(prefs.getString(KEY_WFWAPI_LOGIN_CODE, null))
     val wfwapiLoginCode: StateFlow<String?> = _wfwapiLoginCode.asStateFlow()
-
-    init {
-        // 进程重启后恢复 wfwapi 会话码
-        _wfwapiLoginCode.value = prefs.getString(KEY_WFWAPI_LOGIN_CODE, null)
-    }
 
     fun current(): Session? = _session.value
 

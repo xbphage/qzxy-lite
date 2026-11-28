@@ -1,6 +1,8 @@
 package com.qzxy.lite.data.repository
 
 import com.klcxkj.jni.JniUtils
+import com.qzxy.lite.BuildConfig
+import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.core.dataOrThrow
 import com.qzxy.lite.core.md5Hex as coreMd5Hex
 import com.qzxy.lite.data.api.WalletApi
@@ -11,15 +13,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
 
 /**
- * 钱包仓库：余额（含全局实时状态流，关阀结算/充值后同步更新）、充值档位/支付方式/满赠规则、充值下单。
+ * 钱包仓库：余额（含全局实时状态流，关阀结算/充值后同步更新）、充值档位、充值下单。
  */
 class WalletRepository(
     private val walletApi: WalletApi,
     private val sessionStore: SessionStore,
-    val payLauncher: PayLauncher = PayLauncherNotIntegrated(),
 ) {
 
     private val _latestBalance = MutableStateFlow<String?>(null)
@@ -27,12 +27,6 @@ class WalletRepository(
     val latestBalance: StateFlow<String?> = _latestBalance.asStateFlow()
 
     private fun telPhone(): String = sessionStore.current()?.telephone.orEmpty()
-
-    /** 与验证码接口同款的 secret 算法（充值 signature 的首次试探值）。 */
-    fun signature(): String {
-        val phone = telPhone()
-        return coreMd5Hex(phone.take(3) + phone.takeLast(4) + "klcx")
-    }
 
     /**
      * 充值签名（sj/e0.e(Map) 还原 + 实测通过的 SK）：
@@ -64,20 +58,8 @@ class WalletRepository(
         wallet().display.takeIf { it != "--" }
     }.getOrNull()
 
-    suspend fun allMoney(): JsonObject = walletApi.allMoney().dataOrThrow()
-
-    /** 充值金额档位/套餐（原始响应；data 为数组）。 */
-    suspend fun rechargePackages(): JsonElement = walletApi.rechargePackages().dataOrThrow()
-
-    /** 可用支付方式（原始响应）。 */
-    suspend fun payModes(): JsonElement = walletApi.payModes().dataOrThrow()
-
-    /** 充值满赠规则。 */
-    suspend fun givenRuleCount(): JsonElement = walletApi.givenRuleCount().dataOrThrow()
-
     /** 充值档位解析（amount=面额元，givenMoney=赠送元；typeId 下单时传）。 */
     fun parseTiers(json: JsonElement): List<RechargeTier> {
-        android.util.Log.d("QzxyWallet", "parseTiers input: $json")
         val data = (json as? kotlinx.serialization.json.JsonObject)?.get("data")
             ?: (json as? kotlinx.serialization.json.JsonArray)
             ?: return emptyList()
@@ -101,16 +83,15 @@ class WalletRepository(
             }
         }
         collect(data)
-        android.util.Log.d("QzxyWallet", "parseTiers parsed: ${items.size} tiers ${items.map { it.amount }}")
         return items
     }
 
     /** 充值档位解析（amount=面额元，givenMoney=赠送元；typeId 下单时传）。 */
     suspend fun rechargeTiers(): List<RechargeTier> {
         val json = walletApi.rechargePackages().dataOrThrow()
-        android.util.Log.d("QzxyWallet", "rechargeTiers fetch: $json")
         val tiers = parseTiers(json)
-        android.util.Log.d("QzxyWallet", "rechargeTiers parsed: ${tiers.size} tiers")
+        if (BuildConfig.DEBUG) android.util.Log.d("QzxyWallet", "rechargeTiers parsed: ${tiers.size} tiers")
+        DiagLog.d("wallet", "rechargeTiers count=${tiers.size}")
         return tiers
     }
 
@@ -155,26 +136,6 @@ class WalletRepository(
 
 /** 充值渠道（仅封装官方支付渠道；不做任何绕过/代收）。 */
 enum class PayChannel { WECHAT, ALIPAY }
-
-/**
- * 官方支付拉起器：接入微信/支付宝 SDK 后由实现类完成"拉起官方支付"。
- * 协议要求：仅拉起官方支付，不实现、不模拟、不绕过任何支付流程。
- */
-interface PayLauncher {
-    fun launch(ticket: RechargeTicket)
-}
-
-/** SDK 未接入前的占位实现：显式失败，不伪造支付成功。 */
-class PayLauncherNotIntegrated : PayLauncher {
-    override fun launch(ticket: RechargeTicket) {
-        throw NotImplementedError(
-            "官方支付 SDK 未接入（${ticket.channel}）：仅允许拉起官方支付，接入点见 WalletRepository.payLauncher"
-        )
-    }
-}
-
-/** 充值下单结果：只保存拉起官方支付所需的原始参数，实际支付交给官方 SDK。 */
-class RechargeTicket(val channel: PayChannel, val payload: JsonObject)
 
 /** 充值档位（wallet/recharge/package 实测：typeId/amount/givenMoney）。 */
 data class RechargeTier(

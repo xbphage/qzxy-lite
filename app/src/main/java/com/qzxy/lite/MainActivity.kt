@@ -52,6 +52,7 @@ import com.qzxy.lite.ui.scan.ScanScreen
 import com.qzxy.lite.ui.theme.QzxyTheme
 import com.qzxy.lite.ui.wallet.WalletScreen
 import com.qzxy.lite.update.ReadyUpdate
+import com.qzxy.lite.update.UpdateDecision
 import com.qzxy.lite.update.UpdateManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -129,7 +130,10 @@ private fun QzxyNavHost() {
         scope.launch {
             try {
                 val cachedReady = UpdateManager.getVerifiedReadyUpdate(appContext, BuildConfig.VERSION_NAME)
-                if (!notifyWhenLatest && cachedReady != null && dismissedVersion != cachedReady.version) {
+                if (!notifyWhenLatest &&
+                    cachedReady != null &&
+                    UpdateDecision.shouldShowCachedReady(cachedReady.version, dismissedVersion, false)
+                ) {
                     // 先复用本地已校验完成的安装包提示，同时继续向远端核对是否有比 cachedReady 更新的版本
                     readyUpdate = cachedReady
                 }
@@ -141,12 +145,19 @@ private fun QzxyNavHost() {
 
                 if (remote != null && UpdateManager.isNewer(remote.version, BuildConfig.VERSION_NAME)) {
                     if (cachedReady != null && !UpdateManager.isNewer(remote.version, cachedReady.version)) {
-                        if (notifyWhenLatest || dismissedVersion != cachedReady.version) {
+                        if (UpdateDecision.shouldShowCachedReady(cachedReady.version, dismissedVersion, notifyWhenLatest)) {
                             readyUpdate = cachedReady
                         }
                         return@launch
                     }
-                    if (!notifyWhenLatest && dismissedVersion == remote.version) {
+                    if (!UpdateDecision.shouldDownloadRemote(
+                            remoteVersion = remote.version,
+                            currentVersion = BuildConfig.VERSION_NAME,
+                            cachedVersion = cachedReady?.version,
+                            dismissedVersion = dismissedVersion,
+                            notifyWhenLatest = notifyWhenLatest,
+                        )
+                    ) {
                         return@launch
                     }
                     if (notifyWhenLatest) {
@@ -295,8 +306,11 @@ private fun QzxyNavHost() {
                     onOpenBillDetail = { navController.navigate(Routes.BILL_DETAIL) },
                     onCheckUpdate = { checkUpdate(notifyWhenLatest = true) },
                     onLogout = {
-                        // 本地清会话即可触发 LaunchedEffect 跳转；服务端 logout 由仓库尽力而为。
-                        container.sessionStore.clear()
+                        scope.launch {
+                            container.authRepository.logout()
+                            container.bathRepository.clearCaches()
+                            container.bathSessionStore.clear()
+                        }
                     },
                 )
             }

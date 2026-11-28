@@ -70,7 +70,7 @@ fun BathScreen(
     }
     val state by vm.state.collectAsState()
     // 路由约定：sn = snCode（下单主标识），deviceSn = deviceSncode（第二标识，可空）。
-    LaunchedEffect(deviceName) {
+    LaunchedEffect(sn, deviceSn, deviceName) {
         vm.bindDevice(deviceName, sn.ifBlank { deviceSn }, deviceSn)
     }
 

@@ -41,6 +41,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +53,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qzxy.lite.appContainer
 import com.qzxy.lite.ble.BleSighting
@@ -99,6 +103,19 @@ fun ScanScreen(
             vm.stop()
         } else {
             ensurePermissionAndStart()
+        }
+    }
+
+    // 切后台、系统返回或页面销毁时立即停扫，避免后台耗电及与后续 GATT 连接争抢蓝牙资源
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) vm.stop()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.stop()
         }
     }
 
@@ -174,7 +191,8 @@ fun ScanScreen(
                         val snCode = serverSn ?: serverDeviceSn ?: device.normalizedMac.replace(":", "")
                         val deviceSncode = serverDeviceSn ?: serverSn ?: ""
                         val savedType = if (info?.isOfflineBleOnly == true) "BLE" else (info?.deviceType ?: "NET")
-                        // 保存到本地设备库：首页直接显示（含信号值），无需重复扫描（与原版"添加设备"一致）
+                        // 保存到本地设备库：首页直接显示（含信号值与归属校园），无需重复扫描
+                        val curProjectId = context.appContainer.sessionStore.current()?.projectId.orEmpty()
                         context.appContainer.savedDeviceStore.add(
                             com.qzxy.lite.data.device.SavedDevice(
                                 snCode = snCode,
@@ -183,8 +201,10 @@ fun ScanScreen(
                                 type = savedType,
                                 mac = device.normalizedMac,
                                 rssi = device.rssi,
+                                projectId = curProjectId,
                             )
                         )
+                        vm.stop()
                         onUseDevice(snCode, deviceSncode, displayName)
                     }
                 }

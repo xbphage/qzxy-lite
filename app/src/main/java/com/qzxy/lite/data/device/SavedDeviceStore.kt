@@ -18,6 +18,8 @@ data class SavedDevice(
     val type: String = "NET",
     val mac: String = "",
     val rssi: Int = 0,
+    /** 归属校园 ID；旧数据反序列化为空串表示跨校区可见，新保存设备按校园隔离展示。 */
+    val projectId: String = "",
 )
 
 /**
@@ -38,9 +40,17 @@ class SavedDeviceStore(context: Context) {
         emptyList()
     }
 
-    /** 添加/更新（按 snCode 去重，新的在前面）。 */
+    /** 添加/更新（按 snCode 去重，新的在前面，线程安全写入）。 */
+    @Synchronized
     fun add(device: SavedDevice) {
-        val list = listOf(device) + devices.value.filterNot { it.snCode == device.snCode }
+        val list = listOf(device) + _devices.value.filterNot { it.snCode == device.snCode }
+        save(list)
+    }
+
+    /** 按 snCode 移除已保存的设备。 */
+    @Synchronized
+    fun remove(snCode: String) {
+        val list = _devices.value.filterNot { it.snCode == snCode }
         save(list)
     }
 

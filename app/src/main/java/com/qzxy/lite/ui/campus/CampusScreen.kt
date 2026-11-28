@@ -1,7 +1,9 @@
 package com.qzxy.lite.ui.campus
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,11 +20,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +34,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -72,6 +77,7 @@ fun CampusScreen(
             context.appContainer.authRepository,
             context.appContainer.savedDeviceStore,
             context.appContainer.bathRepository,
+            context.appContainer.sessionStore,
         )
     }
     val state by vm.state.collectAsState()
@@ -79,6 +85,7 @@ fun CampusScreen(
     val savedDevices by context.appContainer.savedDeviceStore.devices.collectAsState()
     // 洗澡会话快照：刚开阀返回首页时立即显示"使用中"，不必等服务端列表刷新。
     val bathSnapshots by context.appContainer.bathSessionStore.snapshots.collectAsState()
+    var pendingRemoveDevice by remember { mutableStateOf<com.qzxy.lite.data.device.SavedDevice?>(null) }
 
     // 首页可见期间轻量对账（20s 一次，只查在用状态）：别处关阀/设备被占用也能反映出来。
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -168,20 +175,42 @@ fun CampusScreen(
                     }
                 }
 
+                val curProjectId = session?.projectId.orEmpty()
+                val scopedSaved = savedDevices.filter {
+                    it.projectId.isBlank() || curProjectId.isBlank() || it.projectId == curProjectId
+                }
+
                 item {
-                    Text(
-                        "浴室 / 热水器",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "浴室 / 热水器",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (scopedSaved.isNotEmpty()) {
+                            Text(
+                                "长按设备可移除",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
                 }
 
                 // 本地保存的设备优先显示（扫描识别后落盘）；无保存设备时才拉服务端列表
-                val displayDevices = if (savedDevices.isNotEmpty()) {
-                    savedDevices.map { d ->
+                val displayDevices = if (scopedSaved.isNotEmpty()) {
+                    scopedSaved.map { d ->
+                        val primarySn = d.deviceSncode.takeIf { it.isNotBlank() } ?: d.snCode
                         // 本地快照（刚开阀）与 ViewModel 对账结果都是"在用"的来源，任一命中即算在用。
-                        val snapshotBusy = bathSnapshots[d.snCode]?.phase == BathPhase.SHOWERING
-                        val reconciled = state.devices.firstOrNull { it.snCode == d.snCode }
+                        val snapshotBusy = bathSnapshots[primarySn]?.phase == BathPhase.SHOWERING ||
+                            bathSnapshots[d.snCode]?.phase == BathPhase.SHOWERING
+                        val reconciled = state.devices.firstOrNull {
+                            it.sn == primarySn || it.snCode == d.snCode
+                        }
                         BathDevice(
                             snCode = d.snCode,
                             deviceSncode = d.deviceSncode.takeIf { it.isNotBlank() },
@@ -197,7 +226,12 @@ fun CampusScreen(
                 }
 
                 items(displayDevices, key = { it.sn ?: it.macAddress ?: it.label }) { device ->
-                    DeviceRow(device, signalText = device.signal?.takeIf { it != 0 }?.let { "信号 $it dBm" }) {
+                    val savedEntry = scopedSaved.firstOrNull { it.snCode == device.snCode }
+                    DeviceRow(
+                        device = device,
+                        signalText = device.signal?.takeIf { it != 0 }?.let { "信号 $it dBm" },
+                        onLongClick = savedEntry?.let { entry -> { pendingRemoveDevice = entry } },
+                    ) {
                         // snCode 用于下单；deviceSncode 是原版同发的第二标识，缺失时为空（仓库层回退）。
                         val sn = device.snCode?.takeIf { it.isNotBlank() }
                             ?: device.deviceSncode?.takeIf { it.isNotBlank() }
@@ -217,17 +251,45 @@ fun CampusScreen(
             }
         }
     }
+
+    pendingRemoveDevice?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoveDevice = null },
+            title = { Text("移除设备") },
+            text = { Text("确认从首页移除已保存的设备「${target.name}」吗？后续仍可通过蓝牙扫描重新添加。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.removeSavedDevice(target.snCode)
+                        pendingRemoveDevice = null
+                    },
+                ) { Text("移除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoveDevice = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
-/** 设备行：状态点 + 设备名 + 水表数字 SN（可附信号值）；整卡可点，「进入」按钮同义。 */
+/** 设备行：状态点 + 设备名 + 水表数字 SN（可附信号值）；整卡可点，长按支持移除已保存设备。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DeviceRow(device: BathDevice, signalText: String? = null, onSelect: () -> Unit) {
+private fun DeviceRow(
+    device: BathDevice,
+    signalText: String? = null,
+    onLongClick: (() -> Unit)? = null,
+    onSelect: () -> Unit,
+) {
     val qz = LocalQzColors.current
     val snText = device.sn ?: device.macAddress ?: "--"
     Card(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onSelect),
+            .combinedClickable(
+                onClick = onSelect,
+                onLongClick = onLongClick,
+            ),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
@@ -289,11 +351,6 @@ private fun MenuRow(
         Text(label, style = MaterialTheme.typography.bodyLarge, color = tint, modifier = Modifier.weight(1f))
         Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-}
-
-@Composable
-private fun MenuDivider() {
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 }
 
 /** 按时段问候（凌晨/早上/中午/下午/晚上）。 */

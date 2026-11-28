@@ -3,6 +3,7 @@ package com.qzxy.lite.data.bath
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * 洗澡阶段。
@@ -40,11 +41,15 @@ class BathSessionStore {
     fun get(sn: String): BathSnapshot? = _snapshots.value[sn]
 
     fun put(sn: String, snapshot: BathSnapshot) {
-        _snapshots.value = _snapshots.value +
-            (sn to snapshot.copy(updatedAt = System.currentTimeMillis()))
+        val stamped = snapshot.copy(updatedAt = System.currentTimeMillis())
+        _snapshots.update { it + (sn to stamped) }
     }
 
     fun remove(sn: String) {
-        _snapshots.value = _snapshots.value - sn
+        _snapshots.update { it - sn }
+    }
+
+    fun clear() {
+        _snapshots.value = emptyMap()
     }
 }

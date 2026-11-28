@@ -11,8 +11,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.ArrayDeque
 import java.util.Locale
 
 /**
@@ -32,8 +33,11 @@ object DiagLog {
     private const val DIR_NAME = "diag"
     private const val FILE_NAME = "qzxy-diag.log"
 
-    private val timeFmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.CHINA)
+    private val timeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS", Locale.CHINA)
+    private val fileTimeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.CHINA)
 
+    private val writeLock = Any()
+    private val ringBuffer = ArrayDeque<String>(MAX_MEMORY_LINES)
     private val _lines = MutableStateFlow<List<String>>(emptyList())
     val lines: StateFlow<List<String>> = _lines.asStateFlow()
 
@@ -47,7 +51,7 @@ object DiagLog {
         if (enabled) return
         appContext = context.applicationContext
         enabled = true
-        val boot = "===== diag start ${timeFmt.format(Date())} " +
+        val boot = "===== diag start ${LocalDateTime.now().format(timeFmt)} " +
             "v${com.qzxy.lite.BuildConfig.VERSION_NAME}(${com.qzxy.lite.BuildConfig.VERSION_CODE}) " +
             "SDK ${Build.VERSION.SDK_INT} ${Build.MANUFACTURER}/${Build.MODEL} ====="
         d("boot", boot)
@@ -56,17 +60,19 @@ object DiagLog {
 
     fun d(tag: String, message: String) {
         if (!enabled) return
-        val line = "${timeFmt.format(Date())} [$tag] ${redact(message)}"
-        // 内存环形缓冲（给 UI 看）
-        _lines.value = (_lines.value + line).takeLast(MAX_MEMORY_LINES)
-        // 追加落盘（给导出用）
-        runCatching {
-            val f = logFile(appContext ?: return@runCatching) ?: return@runCatching
-            if (f.length() > MAX_FILE_BYTES) {
-                // 超限直接截断重来，避免无限增长
-                f.writeText(line + "\n")
-            } else {
-                f.appendText(line + "\n")
+        val timestamp = LocalDateTime.now().format(timeFmt)
+        val line = "$timestamp [$tag] ${redact(message)}"
+        synchronized(writeLock) {
+            if (ringBuffer.size >= MAX_MEMORY_LINES) ringBuffer.removeFirst()
+            ringBuffer.addLast(line)
+            _lines.value = ringBuffer.toList()
+            runCatching {
+                val f = logFile(appContext ?: return@runCatching) ?: return@runCatching
+                if (f.length() > MAX_FILE_BYTES) {
+                    f.writeText(line + "\n")
+                } else {
+                    f.appendText(line + "\n")
+                }
             }
         }
     }
@@ -117,15 +123,18 @@ object DiagLog {
     fun dump(): String = _lines.value.joinToString("\n")
 
     fun clear(context: Context) {
-        _lines.value = emptyList()
-        runCatching { logFile(context)?.delete() }
+        synchronized(writeLock) {
+            ringBuffer.clear()
+            _lines.value = emptyList()
+            runCatching { logFile(context)?.delete() }
+        }
         d("diag", "log cleared")
     }
 
     /** 导出到系统下载目录，返回 Uri（供 UI 提示保存位置）。 */
     fun exportToDownloads(context: Context): Uri? {
         val content = dump().ifBlank { "（无日志）" }
-        val name = "qzxy-diag-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.CHINA).format(Date())}.log"
+        val name = "qzxy-diag-${LocalDateTime.now().format(fileTimeFmt)}.log"
         return runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
                 val values = android.content.ContentValues().apply {

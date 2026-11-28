@@ -20,9 +20,6 @@ object ApiConstants {
     /** 离线设备订单 */
     const val WFW_OFF = "https://wfwoff.china-qzxy.cn/"
 
-    /** MQTT（设备状态/订单推送；topic 与鉴权未还原，见 MqttService TODO） */
-    const val MQTT_BROKER = "tcp://mq.china-qzxy.cn:1883"
-
     /** 公共参数 version 取值：与被分析客户端版本对齐 */
     const val APP_VERSION = "6.5.28"
 

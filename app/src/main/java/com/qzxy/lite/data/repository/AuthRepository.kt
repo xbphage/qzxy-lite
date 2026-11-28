@@ -23,11 +23,9 @@ import okhttp3.Request
 import retrofit2.HttpException
 
 /**
- * 登录 / 会话仓库。两条实测登录路径：
- * - 验证码登录：v3-api registerAndLogin(POST 表单) → 签发 v3 会话；
- * - 密码登录：wfwapi user/login(POST 表单, password=MD5(明文), type=0) → 签发 wfwapi 会话。
- * 两个域名的会话相互独立（同 loginCode 跨域返回 errorCode=8，见 notes/samples/logcat_login.txt），
- * SessionStore 分开保存，拦截器按 host 取对应 loginCode。
+ * 登录 / 会话仓库。两条实测登录路径（均走 v3-api）：
+ * - 验证码登录：v3-api user/registerAndLogin(POST 表单) → 签发 v3 会话；
+ * - 密码登录：v3-api user/login(POST 表单, password=MD5(明文), type=0) → 签发主会话。
  */
 class AuthRepository(
     private val authApi: AuthApi,

@@ -15,8 +15,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 data class MineUiState(
-    val school: String = "昆明市理工大学津桥学院",
-    val projectId: String = "932",
+    val school: String = "校园信息加载中…",
+    val projectId: String = "",
     val maskedPhone: String = "",
     val refundRaw: String? = null,
     val loading: Boolean = false,
@@ -38,21 +38,30 @@ class MineViewModel(
     }
 
     fun load() {
-        val phone = sessionStore.current()?.telephone.orEmpty()
+        val cur = sessionStore.current()
+        val phone = cur?.telephone.orEmpty()
+        _state.update {
+            it.copy(
+                maskedPhone = maskPhone(phone),
+                projectId = cur?.projectId.orEmpty(),
+            )
+        }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             runCatching { campus.projectInfo() }
                 .onSuccess { json ->
-                    findName(json)?.let { name ->
-                        _state.update { it.copy(school = name) }
+                    val name = findName(json)
+                    _state.update {
+                        it.copy(school = name ?: if (it.projectId.isNotBlank()) "校园 ${it.projectId}" else "未绑定校园")
                     }
                 }
-            _state.update {
-                it.copy(
-                    maskedPhone = maskPhone(phone),
-                    projectId = sessionStore.current()?.projectId.orEmpty(),
-                )
-            }
+                .onFailure {
+                    _state.update {
+                        if (it.school == "校园信息加载中…") {
+                            it.copy(school = if (it.projectId.isNotBlank()) "校园 ${it.projectId}" else "未绑定校园")
+                        } else it
+                    }
+                }
             runCatching { bill.refundList() }
                 .onSuccess { el -> _state.update { it.copy(refundRaw = el.toString().take(900)) } }
                 .onFailure { _state.update { it.copy(refundRaw = null) } }

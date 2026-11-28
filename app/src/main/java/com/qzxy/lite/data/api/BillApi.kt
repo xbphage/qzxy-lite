@@ -20,23 +20,7 @@ interface BillApi {
         @Query("billRequestType") billRequestType: String = "1",
     ): ApiResponse<JsonElement>
 
-    /** 未结算账单数量。 */
-    @GET("order/account/runningBill/num/query")
-    suspend fun runningBillNum(): ApiResponse<JsonElement>
-
-    /** 月账单。 */
-    @GET("wallet/billList/month")
-    suspend fun walletBillMonth(@Query("month") month: String): ApiResponse<JsonElement>
-
-    /** 未支付账单。 */
-    @GET("wallet/billList/unPay")
-    suspend fun walletBillUnPay(): ApiResponse<JsonElement>
-
     /** 退款记录列表（本项目入口关闭，仅查看进度）。 */
     @GET("wallet/application/list")
     suspend fun refundList(): ApiResponse<JsonElement>
-
-    /** 退款详情。 */
-    @GET("wallet/application/detail")
-    suspend fun refundDetail(@Query("id") id: String): ApiResponse<JsonElement>
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 data class ScanUiState(
     val devices: List<BleSighting> = emptyList(),
@@ -38,7 +39,7 @@ class ScanViewModel(
     val state: StateFlow<ScanUiState> = _state.asStateFlow()
 
     private var scanJob: Job? = null
-    private val queried = mutableSetOf<String>()
+    private val queried = ConcurrentHashMap.newKeySet<String>()
 
     fun start() {
         if (scanJob?.isActive == true) return
@@ -83,7 +84,10 @@ class ScanViewModel(
                     val name = device.devName ?: device.deviceName ?: return@onSuccess
                     _state.update { it.copy(nameByMac = it.nameByMac + (mac to name)) }
                 }
-                .onFailure { /* 查询失败静默：展示 MAC 即可 */ }
+                .onFailure {
+                    // 失败时允许后续再次扫描到该设备时重试识别，避免永久置灰
+                    queried.remove(mac)
+                }
         }
     }
 }

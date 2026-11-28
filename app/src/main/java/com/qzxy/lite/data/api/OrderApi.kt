@@ -3,14 +3,11 @@ package com.qzxy.lite.data.api
 import com.qzxy.lite.core.ApiResponse
 import com.qzxy.lite.data.model.BluetoothDownRateData
 import com.qzxy.lite.data.model.BluetoothUploadData
-import com.qzxy.lite.data.model.MoneyEstimate
 import com.qzxy.lite.data.model.OrderResult
 import kotlinx.serialization.json.JsonObject
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
-import retrofit2.http.GET
 import retrofit2.http.POST
-import retrofit2.http.Query
 
 /**
  * 开热水器/关阀订单（2026-11-13 用原版 App 实测抓包定稿，见 notes/samples/logcat_device.txt）：
@@ -81,14 +78,6 @@ interface OrderApi {
     suspend fun consumeResult(
         @Field("orderNo") orderNo: String,
     ): ApiResponse<JsonObject>
-
-    /** 预估消费（原版开阀流程未调用，保留备用；方法未实测）。 */
-    @GET("order/perMoney")
-    suspend fun perMoney(
-        @Query("snCode") snCode: String? = null,
-        @Query("deviceSncode") deviceSncode: String? = null,
-        @Query("xfModel") xfModel: String = "0",
-    ): ApiResponse<MoneyEstimate>
 
     /** 蓝牙脱机水表开阀下单（获取下发给水表的 downData 指令）。 */
     @FormUrlEncoded

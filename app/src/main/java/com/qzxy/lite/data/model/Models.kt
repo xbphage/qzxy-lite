@@ -69,20 +69,6 @@ data class LoginResult(
     }
 }
 
-/** 区域/楼栋层级节点（device/area/list/new）。 */
-@Serializable
-data class AreaItem(
-    val areaId: String? = null,
-    val areaName: String? = null,
-    val buildingId: String? = null,
-    val buildingName: String? = null,
-    val floorId: String? = null,
-    val floorName: String? = null,
-) {
-    val label: String get() = areaName ?: buildingName ?: floorName ?: "未命名区域"
-    val id: String? get() = areaId ?: buildingId ?: floorId
-}
-
 /** 浴室/热水器设备（device/bath/list/area、device/info/mac）。字段形态未全核实，一律弹性解析。 */
 @Serializable
 data class BathDevice(
@@ -168,17 +154,6 @@ data class WalletInfo(
         }
 }
 
-/** 预估消费（order/perMoney）。 */
-@Serializable
-data class MoneyEstimate(
-    @Serializable(with = FlexibleStringSerializer::class) val money: String? = null,
-    @Serializable(with = FlexibleStringSerializer::class) val perMoney: String? = null,
-    @Serializable(with = FlexibleStringSerializer::class) val price: String? = null,
-    val unit: String? = null,
-) {
-    val display: String get() = perMoney ?: money ?: price ?: "--"
-}
-
 /** 下单/关阀指令结果（字段形态实测：orderNo 数字、state 数字，均弹性解析）。 */
 @Serializable
 data class OrderResult(
@@ -189,17 +164,6 @@ data class OrderResult(
     @Serializable(with = FlexibleStringSerializer::class) val result: String? = null,
     @Serializable(with = FlexibleStringSerializer::class) val msg: String? = null,
 )
-
-/** 支付方式（settlement/recharge/pay/mode）。 */
-@Serializable
-data class PayMode(
-    val payModeId: String? = null,
-    val payModeName: String? = null,
-    val channelType: String? = null,
-    val iconUrl: String? = null,
-) {
-    val label: String get() = payModeName ?: channelType ?: payModeId ?: "支付方式"
-}
 
 /** 蓝牙下发费率开阀响应（order/downRate/bluetooth/rateOrder）。 */
 @Serializable

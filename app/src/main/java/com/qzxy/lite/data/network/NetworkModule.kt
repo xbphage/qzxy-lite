@@ -13,15 +13,18 @@ import okhttp3.logging.HttpLoggingInterceptor
 import okio.Buffer
 import retrofit2.Retrofit
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
  * 会话失效拦截器：仅对 v3-api 的响应生效（wfwapi 不认 v3 会话，其 errorCode=8 不应清掉本地会话）。
  * 响应体出现 errorCode=8 时：
- * 1. 若开启了保持登录且有本地凭据，优先进行同步静默登录续期，并无感重新发起本次请求；
- * 2. 若无法自动恢复，回调 onFinalExpired（清会话 → UI 跳登录）。
+ * 1. 若开启了保持登录且有本地凭据，优先进行同步静默登录续期，并无感重新发起本次请求（单请求最多重试 1 次）；
+ * 2. 并发场景下若其它线程已刷新过 loginCode，直接复用新会话重试，避免重复登录相互顶号；
+ * 3. 若无法自动恢复，回调 onFinalExpired（清会话 → UI 跳登录）。
  */
 class SessionExpiredInterceptor(
+    private val currentSessionToken: () -> String? = { null },
     private val canSilentReLogin: () -> Boolean = { false },
     private val performSilentReLogin: () -> Boolean = { false },
     private val onFinalExpired: () -> Unit = {},
@@ -31,8 +34,10 @@ class SessionExpiredInterceptor(
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        val alreadyRetried = request.header(CommonParamsInterceptor.HEADER_RETRIED) != null
+        val tokenBefore = currentSessionToken()
         val response = chain.proceed(request)
-        if (response.isSuccessful && request.url.host == SESSION_HOST) {
+        if (!alreadyRetried && response.isSuccessful && request.url.host == SESSION_HOST) {
             val hasExpiredCode = runCatching {
                 val text = response.peekBody(16 * 1024).string()
                 ERROR_CODE_8.containsMatchIn(text)
@@ -41,12 +46,23 @@ class SessionExpiredInterceptor(
             if (hasExpiredCode) {
                 if (canSilentReLogin()) {
                     val recovered = synchronized(lock) {
-                        performSilentReLogin()
+                        val latestToken = currentSessionToken()
+                        if (!tokenBefore.isNullOrBlank() &&
+                            !latestToken.isNullOrBlank() &&
+                            latestToken != tokenBefore
+                        ) {
+                            true
+                        } else {
+                            performSilentReLogin()
+                        }
                     }
                     if (recovered) {
-                        // 静默重连成功：关闭旧响应，重走后续拦截器（自动带上新 loginCode）完成本次请求
+                        // 静默重连成功：关闭旧响应，带一次性重试标记重走后续拦截器完成本次请求
                         response.close()
-                        return chain.proceed(request)
+                        val retried = request.newBuilder()
+                            .header(CommonParamsInterceptor.HEADER_RETRIED, "1")
+                            .build()
+                        return chain.proceed(retried)
                     }
                 }
                 onFinalExpired()
@@ -107,6 +123,7 @@ object NetworkModule {
 
     fun okHttp(
         sessionResolver: (host: String) -> Session?,
+        currentSessionToken: () -> String? = { null },
         canSilentReLogin: () -> Boolean = { false },
         performSilentReLogin: () -> Boolean = { false },
         debug: Boolean = false,
@@ -118,7 +135,14 @@ object NetworkModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .addInterceptor(SessionExpiredInterceptor(canSilentReLogin, performSilentReLogin, onSessionExpired))
+            .addInterceptor(
+                SessionExpiredInterceptor(
+                    currentSessionToken = currentSessionToken,
+                    canSilentReLogin = canSilentReLogin,
+                    performSilentReLogin = performSilentReLogin,
+                    onFinalExpired = onSessionExpired,
+                )
+            )
             .addInterceptor(CommonParamsInterceptor(sessionResolver, json))
             .apply {
                 if (diag) addInterceptor(DiagHttpInterceptor())
@@ -141,17 +165,29 @@ object NetworkModule {
 }
 
 /**
- * 简单 CookieJar：按 host 保存/携带 Cookie（进程内有效）。
- * 原版 App 带阿里云 WAF Cookie（aliyungf_tc/acw_tc），无 Cookie 的客户端其请求会被
- * WAF 拦截（实测：无 Cookie 时请求挂起无响应）。Cookie 非敏感（WAF 防护用）。
+ * 简单 CookieJar：按 host 与 cookie.name 增量合并保存并剔除过期 Cookie。
+ * 避免单一 Set-Cookie 响应整包覆写掉阿里云 WAF Cookie（aliyungf_tc/acw_tc）。
  */
-private class SimpleCookieJar : CookieJar {
-    private val store = java.util.concurrent.ConcurrentHashMap<String, List<Cookie>>()
+internal class SimpleCookieJar : CookieJar {
+    private val store = ConcurrentHashMap<String, ConcurrentHashMap<String, Cookie>>()
 
     override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<Cookie>) {
-        if (cookies.isNotEmpty()) store[url.host] = cookies
+        if (cookies.isEmpty()) return
+        val hostCookies = store.getOrPut(url.host) { ConcurrentHashMap() }
+        val now = System.currentTimeMillis()
+        cookies.forEach { cookie ->
+            if (cookie.expiresAt < now || cookie.value.isEmpty()) {
+                hostCookies.remove(cookie.name)
+            } else {
+                hostCookies[cookie.name] = cookie
+            }
+        }
     }
 
-    override fun loadForRequest(url: okhttp3.HttpUrl): List<Cookie> =
-        store[url.host] ?: emptyList()
+    override fun loadForRequest(url: okhttp3.HttpUrl): List<Cookie> {
+        val hostCookies = store[url.host] ?: return emptyList()
+        val now = System.currentTimeMillis()
+        hostCookies.entries.removeIf { (_, c) -> c.expiresAt < now }
+        return hostCookies.values.filter { it.matches(url) }
+    }
 }

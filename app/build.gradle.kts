@@ -14,8 +14,8 @@ android {
         applicationId = "com.qzxy.lite"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.0.6"
+        versionCode = 7
+        versionName = "1.0.7"
     }
 
     //signingConfigs {
@@ -29,8 +29,13 @@ android {
     // 移除硬编码签名配置，构建纯无签名 APK 供用户自行签名
     buildTypes {
         release {
-            // 正式版签名（mod.keystore）；不混淆以保证运行稳定
-            isMinifyEnabled = false
+            // 启用 R8 代码树摇与资源缩减（proguard-rules.pro 配合 -dontobfuscate 保持反射/SDK 稳定）
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             //signingConfig = signingConfigs.getByName("release")
             signingConfig = null
             buildConfigField("boolean", "DIAG_LOG", "false")
@@ -43,6 +48,7 @@ android {
         create("diag") {
             initWith(getByName("release"))
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = null
             matchingFallbacks += listOf("release")
             versionNameSuffix = "-diag"
@@ -52,9 +58,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -66,6 +69,12 @@ android {
     lint {
         checkReleaseBuilds = false
         abortOnError = false
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -97,9 +106,6 @@ dependencies {
     implementation(libs.androidx.security.crypto)
 
     implementation(libs.kotlinx.coroutines.android)
-
-    // MQTT 可选模块（设备/订单实时推送）
-    implementation(libs.paho.mqtt)
 
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)

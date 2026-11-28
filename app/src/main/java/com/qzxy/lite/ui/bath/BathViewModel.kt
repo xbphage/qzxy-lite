@@ -14,6 +14,7 @@ import com.qzxy.lite.data.bath.BathSnapshot
 import com.qzxy.lite.data.repository.BathRepository
 import com.qzxy.lite.data.repository.WalletRepository
 import com.qzxy.lite.ui.common.toUserMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,12 +66,16 @@ class BathViewModel(
     private var deviceSncode: String? = null
     private var knownOfflineBle: Boolean = false
     private var lastActionAtMs: Long = 0L
+    private var bindPollJob: Job? = null
 
     fun bindDevice(label: String, sn: String?, deviceSncode: String? = null) {
-        if (_state.value.deviceLabel.isNotEmpty()) return
         val target = sn?.takeIf { it.isNotBlank() }
+        val resolvedSecondSn = deviceSncode?.takeIf { it.isNotBlank() } ?: target
+        if (snCode == target && this.deviceSncode == resolvedSecondSn && _state.value.deviceLabel == label) return
+        bindPollJob?.cancel()
         snCode = target
-        this.deviceSncode = deviceSncode?.takeIf { it.isNotBlank() } ?: target
+        this.deviceSncode = resolvedSecondSn
+        knownOfflineBle = false
         DiagLog.d("bath", "bind label=$label sn=$target deviceSncode=${this.deviceSncode}")
 
         val snapshot = target?.let { sessionStore.get(it) }
@@ -81,7 +86,9 @@ class BathViewModel(
                 phase = restoredPhase,
                 orderNo = snapshot?.orderNo,
                 message = snapshot?.message,
-                isBleMode = snapshot?.isBleMode ?: it.isBleMode,
+                error = null,
+                busy = false,
+                isBleMode = snapshot?.isBleMode ?: false,
             )
         }
         if (restoredPhase == BathPhase.IDLE && snapshot?.phase == BathPhase.CLOSED) {
@@ -89,7 +96,7 @@ class BathViewModel(
         }
 
         if (target != null) {
-            viewModelScope.launch {
+            bindPollJob = viewModelScope.launch {
                 val cloudDevice = bath.resolveCloudDevice(target, this@BathViewModel.deviceSncode.orEmpty())
                 if (cloudDevice?.isOfflineBleOnly == true) {
                     knownOfflineBle = true

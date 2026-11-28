@@ -1,16 +1,12 @@
 package com.qzxy.lite.data.api
 
 import com.qzxy.lite.core.ApiResponse
-import com.qzxy.lite.data.model.PayMode
 import com.qzxy.lite.data.model.WalletInfo
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import retrofit2.http.Body
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.POST
-import retrofit2.http.Query
 
 /**
  * 余额 / 充值（2026-11-13 ~ 2026-11-28 实测定稿）：
@@ -24,10 +20,6 @@ interface WalletApi {
     /** 钱包余额（GET + 公共参数；原版同款调用，见 logcat_device.txt 22:18:19）。 */
     @GET("account/wallet")
     suspend fun wallet(): ApiResponse<WalletInfo>
-
-    /** 各类账户资金汇总。 */
-    @GET("user/account/money/all")
-    suspend fun allMoney(): ApiResponse<JsonObject>
 
     /** 充值金额档位/套餐列表（v3 等价：settlement/recharge/package/list；data 为数组）。 */
     @GET("settlement/recharge/package/list")
@@ -60,8 +52,4 @@ interface WalletApi {
         @Field("signature") signature: String,
         @Field("telPhone") telPhone: String,
     ): ApiResponse<String>
-
-    /** 月账单。 */
-    @GET("wallet/billList/month")
-    suspend fun billMonth(@Query("month") month: String? = null): ApiResponse<JsonObject>
 }

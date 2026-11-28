@@ -6,6 +6,7 @@ import com.qzxy.lite.data.repository.AuthRepository
 import com.qzxy.lite.data.session.SessionStore
 import com.qzxy.lite.ui.common.UiState
 import com.qzxy.lite.ui.common.toUserMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,15 +28,17 @@ data class LoginUiState(
 )
 
 /**
- * 登录（与原版一致，两种实测方式）：
- * - 验证码登录：手机号 + 短信验证码（v3-api registerAndLogin）；
- * - 密码登录：手机号 + 密码（wfwapi user/login，password=MD5(明文)，绕开验证码频控）。
+ * 登录（与原版一致，两种实测方式，均走 v3-api）：
+ * - 验证码登录：手机号 + 短信验证码（v3-api user/registerAndLogin）；
+ * - 密码登录：手机号 + 密码（v3-api user/login，password=MD5(明文)，绕开验证码频控）。
  * 登录响应自动返回 projectId/loginCode/userId/accountId 并写入会话。
  */
 class LoginViewModel(
     private val auth: AuthRepository,
     private val sessionStore: SessionStore,
 ) : ViewModel() {
+
+    private var countdownJob: Job? = null
 
     private val _state = MutableStateFlow(
         LoginUiState(
@@ -83,7 +86,7 @@ class LoginViewModel(
         doLogin({ auth.login(s.telephone, s.code, s.keepLoggedIn) }, onSuccess)
     }
 
-    /** 密码登录（wfwapi user/login，type=0，password=MD5(明文)）。 */
+    /** 密码登录（v3-api user/login，type=0，password=MD5(明文)）。 */
     fun loginWithPassword(onSuccess: () -> Unit) {
         val s = _state.value
         if (s.telephone.length != 11 || s.password.isBlank()) return
@@ -106,11 +109,13 @@ class LoginViewModel(
     }
 
     private fun startCountdown() {
-        viewModelScope.launch {
+        countdownJob?.cancel()
+        countdownJob = viewModelScope.launch {
             for (i in 60 downTo 1) {
                 _state.update { it.copy(countdown = i) }
                 delay(1_000)
             }
+            _state.update { it.copy(countdown = 0) }
         }
     }
 }

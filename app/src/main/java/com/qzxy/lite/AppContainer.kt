@@ -21,14 +21,11 @@ import com.qzxy.lite.data.repository.CampusRepository
 import com.qzxy.lite.data.repository.WalletRepository
 import com.qzxy.lite.data.session.Session
 import com.qzxy.lite.data.session.SessionStore
-import com.qzxy.lite.mqtt.MqttService
 
 /** 轻量依赖容器：网络层按 SessionStore 当前值动态注入公共参数。 */
 class AppContainer(context: Context) {
 
     val sessionStore: SessionStore = SessionStore(context)
-
-    private val sessionProvider: () -> Session? = { sessionStore.current() }
 
     /** 按域名取会话：wfwapi 用密码登录签发的会话码，其余（v3-api）用验证码登录的会话。 */
     private val sessionResolver: (host: String) -> Session? = { host ->
@@ -45,6 +42,7 @@ class AppContainer(context: Context) {
 
     private val okHttpClient = NetworkModule.okHttp(
         sessionResolver = sessionResolver,
+        currentSessionToken = { sessionStore.current()?.loginCode },
         canSilentReLogin = { sessionStore.keepLoggedIn && sessionStore.savedPasswordMd5 != null },
         performSilentReLogin = { authRepository.performSilentReLoginSync() },
         debug = BuildConfig.DEBUG,
@@ -84,7 +82,4 @@ class AppContainer(context: Context) {
     val bathRepository = BathRepository(orderApi, bleWaterMeterClient, sessionStore, deviceApi)
     val walletRepository = WalletRepository(walletApi, sessionStore)
     val billRepository = BillRepository(billApi)
-
-    /** MQTT 可选模块：topic/鉴权未还原前不订阅业务主题。 */
-    val mqttService = MqttService()
 }

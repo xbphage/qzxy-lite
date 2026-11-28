@@ -1,3 +1,6 @@
+# 仅执行代码/图标树摇与资源缩减，保留类名与方法名以确保反射/支付宝 SDK 及堆栈排障稳定
+-dontobfuscate
+
 # kotlinx-serialization
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt
@@ -16,5 +19,16 @@
 -keep,allowobfuscation,allowshrinking class retrofit2.Response
 -keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
 
-# Paho MQTT
--dontwarn org.eclipse.paho.**
+# Alipay SDK
+-keep class com.alipay.** { *; }
+-dontwarn com.alipay.**
+-keep class com.ta.utdid2.** { *; }
+-dontwarn com.ta.utdid2.**
+-keep class com.ut.device.** { *; }
+-dontwarn com.ut.device.**
+
+# AndroidX Security Crypto / Tink
+-dontwarn com.google.crypto.tink.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**

@@ -30,8 +30,13 @@ class CommonParamsInterceptor(
 ) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        if (!request.url.host.endsWith(HOST_SUFFIX)) return chain.proceed(request)
+        val rawRequest = chain.request()
+        val request = if (rawRequest.header(HEADER_RETRIED) != null) {
+            rawRequest.newBuilder().removeHeader(HEADER_RETRIED).build()
+        } else {
+            rawRequest
+        }
+        if (!isAllowedHost(request.url.host)) return chain.proceed(request)
 
         val session = sessionResolver(request.url.host) ?: return chain.proceed(request)
         val builder = request.newBuilder()
@@ -104,10 +109,14 @@ class CommonParamsInterceptor(
         return mediaType.type == "application" && mediaType.subtype.contains("json")
     }
 
-    private companion object {
-        const val HOST_SUFFIX = "china-qzxy.cn"
-        const val HEADER_PROJECT = "Config-Project"
-        const val HEADER_KEYS = "Config-Keys"
-        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    private fun isAllowedHost(host: String): Boolean =
+        host == HOST_SUFFIX || host.endsWith(".$HOST_SUFFIX")
+
+    internal companion object {
+        const val HEADER_RETRIED = "X-Qzxy-Session-Retried"
+        private const val HOST_SUFFIX = "china-qzxy.cn"
+        private const val HEADER_PROJECT = "Config-Project"
+        private const val HEADER_KEYS = "Config-Keys"
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

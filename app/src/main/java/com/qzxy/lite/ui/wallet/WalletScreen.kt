@@ -19,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Payment
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,10 +62,10 @@ fun WalletScreen(onBack: () -> Unit) {
     val qz = LocalQzColors.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 每次回到钱包页（含关阀后切回 Tab）自动静默刷新一次余额，避免 restoreState 展示旧余额
+    // 每次回到钱包页（含关阀后切回 Tab）自动静默刷新一次余额（带 5s 冷却），避免 restoreState 展示旧余额
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) vm.refresh(initial = false)
+            if (event == Lifecycle.Event.ON_RESUME) vm.refresh(initial = false, force = false)
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

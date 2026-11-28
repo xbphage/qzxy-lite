@@ -204,7 +204,10 @@ fun BillDetailScreen(onBack: () -> Unit) {
                             QzEmptyState("本月暂无${if (state.type == "0") "消费" else "充值"}记录")
                         }
                     }
-                    itemsIndexed(state.bills) { _, bill ->
+                    itemsIndexed(
+                        items = state.bills,
+                        key = { idx, bill -> "${bill.kind}_${bill.orderId}_${bill.dealDate}_$idx" },
+                    ) { _, bill ->
                         BillRow(bill) { vm.select(bill) }
                     }
                 }

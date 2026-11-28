@@ -4,11 +4,11 @@ import android.app.Activity
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.qzxy.lite.data.model.PayMode
 import com.qzxy.lite.data.repository.PayChannel
 import com.qzxy.lite.data.repository.RechargeTier
 import com.qzxy.lite.data.repository.WalletRepository
 import com.qzxy.lite.ui.common.toUserMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,8 +35,11 @@ class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
     private val _state = MutableStateFlow(WalletUiState())
     val state: StateFlow<WalletUiState> = _state.asStateFlow()
 
+    private var refreshJob: Job? = null
+    private var lastRefreshAtMs: Long = 0L
+
     init {
-        refresh(initial = true)
+        refresh(initial = true, force = true)
         viewModelScope.launch {
             wallet.latestBalance.filterNotNull().collect { latest ->
                 _state.update { it.copy(balance = latest) }
@@ -44,19 +47,27 @@ class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
         }
     }
 
-    fun refresh(initial: Boolean = false) {
+    fun refresh(initial: Boolean = false, force: Boolean = true) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastRefreshAtMs < SILENT_REFRESH_COOLDOWN_MS) return
         if (_state.value.loading || _state.value.refreshing) return
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             _state.update {
                 if (initial) it.copy(loading = true, error = null)
                 else it.copy(refreshing = true, error = null)
             }
             runCatching {
                 val info = wallet.wallet()
-                val tiers = runCatching { wallet.rechargeTiers() }.getOrDefault(emptyList())
+                val tiers = if (_state.value.tiers.isEmpty() || force) {
+                    runCatching { wallet.rechargeTiers() }.getOrDefault(_state.value.tiers)
+                } else {
+                    _state.value.tiers
+                }
                 Pair(info, tiers)
             }
                 .onSuccess { (info, tiers) ->
+                    lastRefreshAtMs = System.currentTimeMillis()
                     _state.update {
                         val fallbackAmount = if (it.amount.isBlank()) tiers.firstOrNull()?.amount ?: "" else it.amount
                         it.copy(
@@ -131,5 +142,6 @@ class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
     companion object {
         /** 实测充值金额下限（元）；不同渠道/活动可能为 10，最终以服务端校验为准。 */
         const val MIN_RECHARGE_YUAN = 5.0
+        private const val SILENT_REFRESH_COOLDOWN_MS = 5_000L
     }
 }

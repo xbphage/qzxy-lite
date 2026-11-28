@@ -7,6 +7,7 @@ import com.qzxy.lite.core.formatYuan
 import com.qzxy.lite.data.repository.BillItem
 import com.qzxy.lite.data.repository.BillRepository
 import com.qzxy.lite.ui.common.toUserMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,6 +33,8 @@ class BillDetailViewModel(private val bill: BillRepository) : ViewModel() {
     private val _state = MutableStateFlow(BillDetailUiState())
     val state: StateFlow<BillDetailUiState> = _state.asStateFlow()
 
+    private var loadJob: Job? = null
+
     init {
         load()
     }
@@ -39,7 +42,8 @@ class BillDetailViewModel(private val bill: BillRepository) : ViewModel() {
     fun load() {
         val month = _state.value.month
         val type = _state.value.type
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             runCatching { bill.accountBillList(month, type) }
                 .onSuccess { el -> _state.update { it.copy(bills = extractBills(el)) } }

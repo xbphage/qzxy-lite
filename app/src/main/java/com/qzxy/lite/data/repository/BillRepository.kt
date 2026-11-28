@@ -11,16 +11,6 @@ class BillRepository(private val billApi: BillApi) {
     suspend fun accountBillList(month: String, billRequestType: String): JsonElement =
         billApi.accountBillList(month = month, billRequestType = billRequestType).dataOrThrow()
 
-    /** 未结算账单数量。 */
-    suspend fun runningBillNum(): JsonElement = billApi.runningBillNum().dataOrThrow()
-
-    /** 月账单。 */
-    suspend fun walletBillMonth(month: String): JsonElement =
-        billApi.walletBillMonth(month = month).dataOrThrow()
-
-    /** 未支付账单。 */
-    suspend fun walletBillUnPay(): JsonElement = billApi.walletBillUnPay().dataOrThrow()
-
     /** 退款记录列表。 */
     suspend fun refundList(): JsonElement = billApi.refundList().dataOrThrow()
 }
