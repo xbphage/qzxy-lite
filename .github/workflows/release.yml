@@ -25,11 +25,20 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
+      - name: Ensure Android SDK 36 & Accept Licenses
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          if [ -n "$SDKMANAGER" ] && [ -x "$SDKMANAGER" ]; then
+            (yes || true) | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+            "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          fi
+
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew
 
-      - name: Build with Gradle
-        run: ./gradlew assembleRelease --no-daemon
+      - name: Run Unit Tests & Build Release APK
+        run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
 
       - name: Sign & Prepare APK Asset
         env:
@@ -53,7 +62,8 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > release.jks
 
             # Locate apksigner from Android SDK build-tools
-            BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+            SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+            BUILD_TOOLS_DIR=$(ls -d "$SDK_ROOT"/build-tools/* | sort -V | tail -n 1)
             echo "Using apksigner from: $BUILD_TOOLS_DIR"
 
             # If KEY_PASSWORD is not separately set, fallback to KEYSTORE_PASSWORD

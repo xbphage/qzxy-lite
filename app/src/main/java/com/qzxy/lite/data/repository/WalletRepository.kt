@@ -1,21 +1,20 @@
 package com.qzxy.lite.data.repository
 
-import com.qzxy.lite.core.ApiResponse
+import com.klcxkj.jni.JniUtils
 import com.qzxy.lite.core.dataOrThrow
-import com.qzxy.lite.core.successOrThrow
+import com.qzxy.lite.core.md5Hex as coreMd5Hex
 import com.qzxy.lite.data.api.WalletApi
-import com.qzxy.lite.data.model.PayMode
 import com.qzxy.lite.data.model.WalletInfo
 import com.qzxy.lite.data.session.SessionStore
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.coroutines.withContext
-import java.security.MessageDigest
 
 /**
- * 钱包仓库：余额、充值档位/支付方式/满赠规则、充值下单（只到"拿到拉起参数"为止）。
- * 签名 signature：生成逻辑未还原（native/工具类），先用验证码同款 secret（MD5(前3+后4+klcx)）试探，
- * 服务端若拒绝会原样返回错误，再按抓包修正。
+ * 钱包仓库：余额（含全局实时状态流，关阀结算/充值后同步更新）、充值档位/支付方式/满赠规则、充值下单。
  */
 class WalletRepository(
     private val walletApi: WalletApi,
@@ -23,15 +22,16 @@ class WalletRepository(
     val payLauncher: PayLauncher = PayLauncherNotIntegrated(),
 ) {
 
-    private fun projectId(): String = sessionStore.current()?.projectId.orEmpty()
+    private val _latestBalance = MutableStateFlow<String?>(null)
+    /** 最近一次向服务端拉取到的账户余额展示值（如 `"19.81"`），供钱包页与关阀结算共用。 */
+    val latestBalance: StateFlow<String?> = _latestBalance.asStateFlow()
+
     private fun telPhone(): String = sessionStore.current()?.telephone.orEmpty()
 
     /** 与验证码接口同款的 secret 算法（充值 signature 的首次试探值）。 */
     fun signature(): String {
         val phone = telPhone()
-        val digest = MessageDigest.getInstance("MD5")
-            .digest((phone.take(3) + phone.takeLast(4) + "klcx").toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
+        return coreMd5Hex(phone.take(3) + phone.takeLast(4) + "klcx")
     }
 
     /**
@@ -45,18 +45,24 @@ class WalletRepository(
             "rechargeMoney" to rechargeMoney,
             "telPhone" to telPhone,
         )
-        val sb = StringBuilder()
-        for ((k, v) in map) sb.append(k).append(v)
-        sb.append("sign-kailu=")
-        return md5Hex(sb.toString().trim())
+        val joined = buildString {
+            for ((k, v) in map) append(k).append(v)
+            append(JniUtils.getSk())
+        }
+        return coreMd5Hex(joined.trim())
     }
 
-    private fun md5Hex(text: String): String {
-        val digest = MessageDigest.getInstance("MD5").digest(text.toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
+    suspend fun wallet(): WalletInfo {
+        val info = walletApi.wallet().dataOrThrow()
+        val display = info.display
+        if (display != "--") _latestBalance.value = display
+        return info
     }
 
-    suspend fun wallet(): WalletInfo = walletApi.wallet().dataOrThrow()
+    /** 静默刷新并返回最新账户余额（失败或空值返回 null，不影响主结算流程）。 */
+    suspend fun refreshBalanceQuietly(): String? = runCatching {
+        wallet().display.takeIf { it != "--" }
+    }.getOrNull()
 
     suspend fun allMoney(): JsonObject = walletApi.allMoney().dataOrThrow()
 

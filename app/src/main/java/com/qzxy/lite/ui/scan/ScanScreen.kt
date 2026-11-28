@@ -168,13 +168,14 @@ fun ScanScreen(
                         val serverDeviceSn = info?.deviceSncode?.takeIf { it.isNotBlank() }
                         val snCode = serverSn ?: serverDeviceSn ?: device.normalizedMac.replace(":", "")
                         val deviceSncode = serverDeviceSn ?: serverSn ?: ""
+                        val savedType = if (info?.isOfflineBleOnly == true) "BLE" else (info?.deviceType ?: "NET")
                         // 保存到本地设备库：首页直接显示（含信号值），无需重复扫描（与原版"添加设备"一致）
                         context.appContainer.savedDeviceStore.add(
                             com.qzxy.lite.data.device.SavedDevice(
                                 snCode = snCode,
                                 deviceSncode = deviceSncode,
                                 name = displayName,
-                                type = "NET",
+                                type = savedType,
                                 mac = device.normalizedMac,
                                 rssi = device.rssi,
                             )

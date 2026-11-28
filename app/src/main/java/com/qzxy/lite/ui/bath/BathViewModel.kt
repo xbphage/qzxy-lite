@@ -12,6 +12,7 @@ import com.qzxy.lite.data.bath.BathPhase
 import com.qzxy.lite.data.bath.BathSessionStore
 import com.qzxy.lite.data.bath.BathSnapshot
 import com.qzxy.lite.data.repository.BathRepository
+import com.qzxy.lite.data.repository.WalletRepository
 import com.qzxy.lite.ui.common.toUserMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,6 +55,7 @@ data class BathUiState(
 class BathViewModel(
     private val bath: BathRepository,
     private val sessionStore: BathSessionStore,
+    private val wallet: WalletRepository? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(BathUiState())
@@ -61,6 +63,8 @@ class BathViewModel(
 
     private var snCode: String? = null
     private var deviceSncode: String? = null
+    private var knownOfflineBle: Boolean = false
+    private var lastActionAtMs: Long = 0L
 
     fun bindDevice(label: String, sn: String?, deviceSncode: String? = null) {
         if (_state.value.deviceLabel.isNotEmpty()) return
@@ -77,6 +81,7 @@ class BathViewModel(
                 phase = restoredPhase,
                 orderNo = snapshot?.orderNo,
                 message = snapshot?.message,
+                isBleMode = snapshot?.isBleMode ?: it.isBleMode,
             )
         }
         if (restoredPhase == BathPhase.IDLE && snapshot?.phase == BathPhase.CLOSED) {
@@ -85,7 +90,16 @@ class BathViewModel(
 
         if (target != null) {
             viewModelScope.launch {
-                reconcile(target)
+                val cloudDevice = bath.resolveCloudDevice(target, this@BathViewModel.deviceSncode.orEmpty())
+                if (cloudDevice?.isOfflineBleOnly == true) {
+                    knownOfflineBle = true
+                    if (_state.value.phase == BathPhase.IDLE && !_state.value.busy && !_state.value.isBleMode) {
+                        setState { it.copy(isBleMode = true) }
+                    }
+                }
+                if (!_state.value.isBleMode) {
+                    reconcile(target)
+                }
                 while (isActive) {
                     delay(RECONCILE_INTERVAL_MS)
                     if (_state.value.phase == BathPhase.SHOWERING && !_state.value.isBleMode) {
@@ -150,8 +164,7 @@ class BathViewModel(
             setState { it.copy(error = "设备 SN 缺失：请从扫描/列表进入并确认设备标识字段") }
             return
         }
-        if (_state.value.busy) return
-        if (_state.value.phase in BUSY_PHASES) return
+        if (_state.value.busy || _state.value.phase in BUSY_PHASES || !markActionAccepted()) return
 
         viewModelScope.launch {
             setState { it.copy(busy = true, error = null, message = null, phase = BathPhase.OPENING) }
@@ -247,14 +260,14 @@ class BathViewModel(
                 setState { it.copy(bleStatus = status, message = status) }
             }
             val orderNo = rateData.orderNo
-            val perMoney = rateData.perMoney
+            val preMoneyHint = rateData.perMoney?.takeIf { it.isNotBlank() }?.let { "（预扣 ¥$it）" }.orEmpty()
             setState {
                 it.copy(
                     busy = false,
                     phase = BathPhase.SHOWERING,
                     orderNo = orderNo,
                     isBleMode = true,
-                    message = "蓝牙开阀成功，供水进行中" + (if (!perMoney.isNullOrBlank()) "（预扣 $perMoney 元）" else ""),
+                    message = "蓝牙开阀成功，供水进行中$preMoneyHint",
                     error = null,
                 )
             }
@@ -274,7 +287,7 @@ class BathViewModel(
     /** 关阀操作 */
     fun close() {
         val sn = snCode
-        if (_state.value.busy) return
+        if (_state.value.busy || !markActionAccepted()) return
         viewModelScope.launch {
             setState { it.copy(busy = true, error = null, phase = BathPhase.CLOSING) }
 
@@ -309,10 +322,11 @@ class BathViewModel(
                 val consumeYuan = pollSettledYuan(orderNo)
                 val consumeText = consumeYuan?.let { "，本次消费 ¥${formatYuan(it)}" }
                     ?: "，账单结算中，稍后请在账单明细查看"
+                val balanceText = wallet?.refreshBalanceQuietly()?.let { "，当前余额 ¥$it" }.orEmpty()
                 setState {
                     it.copy(
                         phase = BathPhase.CLOSED,
-                        message = (if (confirmed) "已关阀" else "关阀指令已下发（结果未确认）") + consumeText,
+                        message = (if (confirmed) "已关阀" else "关阀指令已下发（结果未确认）") + consumeText + balanceText,
                     )
                 }
                 scheduleClosedReset()
@@ -330,7 +344,7 @@ class BathViewModel(
     /** 蓝牙脱机关阀 */
     private suspend fun closeViaBle(mac: String?) {
         if (mac.isNullOrBlank()) {
-            setState { it.copy(busy = false, error = "蓝牙 MAC 缺失，无法关阀") }
+            setState { it.copy(busy = false, phase = BathPhase.SHOWERING, error = "蓝牙 MAC 缺失，无法关阀") }
             return
         }
         val orderNo = _state.value.orderNo
@@ -338,14 +352,17 @@ class BathViewModel(
             val uploadData = bath.closeBle(mac, orderNo) { status ->
                 setState { it.copy(bleStatus = status, message = status) }
             }
-            val consumeMoney = uploadData.consumeMoney
+            val consumeMoney = uploadData.resolvedConsumeMoney
+            // 优先查询服务端 account/wallet 拿实时精准余额，回退使用结算响应自带余额（均已按 0.001 元/元规则归一）
+            val currentBalance = wallet?.refreshBalanceQuietly() ?: uploadData.resolvedBalance
             val moneyText = if (!consumeMoney.isNullOrBlank()) "，本次消费 ¥$consumeMoney" else ""
+            val balanceText = if (!currentBalance.isNullOrBlank()) "，当前余额 ¥$currentBalance" else ""
             setState {
                 it.copy(
                     busy = false,
                     phase = BathPhase.CLOSED,
                     orderNo = orderNo,
-                    message = "蓝牙已关阀$moneyText",
+                    message = "蓝牙已关阀$moneyText$balanceText",
                     error = null,
                 )
             }
@@ -366,9 +383,23 @@ class BathViewModel(
         viewModelScope.launch {
             delay(CLOSED_RESET_MS)
             if (_state.value.phase == BathPhase.CLOSED) {
-                setState { it.copy(phase = BathPhase.IDLE, orderNo = null, busy = false, isBleMode = false) }
+                setState {
+                    it.copy(
+                        phase = BathPhase.IDLE,
+                        orderNo = null,
+                        busy = false,
+                        isBleMode = knownOfflineBle,
+                    )
+                }
             }
         }
+    }
+
+    private fun markActionAccepted(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastActionAtMs < ACTION_DEBOUNCE_MS) return false
+        lastActionAtMs = now
+        return true
     }
 
     private suspend fun resolveByUsing(sn: String): String? =
@@ -424,7 +455,12 @@ class BathViewModel(
         if (next.phase == BathPhase.CLOSED) return
         sessionStore.put(
             sn,
-            BathSnapshot(phase = next.phase, orderNo = next.orderNo, message = next.message),
+            BathSnapshot(
+                phase = next.phase,
+                orderNo = next.orderNo,
+                message = next.message,
+                isBleMode = next.isBleMode,
+            ),
         )
     }
 
@@ -437,6 +473,7 @@ class BathViewModel(
         val BUSY_PHASES = setOf(BathPhase.OPENING, BathPhase.SHOWERING, BathPhase.CLOSING)
         val ACTIVE_PHASES = setOf(BathPhase.OPENING, BathPhase.SHOWERING, BathPhase.CLOSING)
 
+        const val ACTION_DEBOUNCE_MS = 1_800L
         const val RECONCILE_INTERVAL_MS = 5_000L
         const val RECONCILE_GRACE_MS = 10_000L
         const val CLOSED_RESET_MS = 6_000L

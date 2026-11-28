@@ -101,5 +101,6 @@ dependencies {
     // MQTT 可选模块（设备/订单实时推送）
     implementation(libs.paho.mqtt)
 
+    testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

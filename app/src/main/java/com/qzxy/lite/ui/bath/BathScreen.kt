@@ -62,7 +62,11 @@ fun BathScreen(
 ) {
     val context = LocalContext.current
     val vm: BathViewModel = viewModel {
-        BathViewModel(context.appContainer.bathRepository, context.appContainer.bathSessionStore)
+        BathViewModel(
+            context.appContainer.bathRepository,
+            context.appContainer.bathSessionStore,
+            context.appContainer.walletRepository,
+        )
     }
     val state by vm.state.collectAsState()
     // 路由约定：sn = snCode（下单主标识），deviceSn = deviceSncode（第二标识，可空）。

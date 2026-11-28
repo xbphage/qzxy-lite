@@ -13,6 +13,7 @@ import com.qzxy.lite.ble.BleScanner
 import com.qzxy.lite.ble.BleWaterMeterClient
 import com.qzxy.lite.data.bath.BathSessionStore
 import com.qzxy.lite.data.device.SavedDeviceStore
+import com.qzxy.lite.data.legal.DisclaimerStore
 import com.qzxy.lite.data.repository.AuthRepository
 import com.qzxy.lite.data.repository.BathRepository
 import com.qzxy.lite.data.repository.BillRepository
@@ -68,6 +69,9 @@ class AppContainer(context: Context) {
 
     /** BLE 水表通信客户端（脱机蓝牙水表）。 */
     val bleWaterMeterClient = BleWaterMeterClient(context)
+
+    /** 免责声明与免费须知确认状态。 */
+    val disclaimerStore = DisclaimerStore(context)
 
     /** 已保存设备（扫描识别后落盘，首页直接显示）。 */
     val savedDeviceStore = SavedDeviceStore(context)

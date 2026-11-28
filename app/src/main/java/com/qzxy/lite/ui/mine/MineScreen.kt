@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material3.Card
@@ -43,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qzxy.lite.BuildConfig
 import com.qzxy.lite.appContainer
+import com.qzxy.lite.ui.common.DisclaimerDialog
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.ExpandableRawCard
 
@@ -65,6 +67,7 @@ fun MineScreen(
     }
     val state by vm.state.collectAsState()
     var diagOpen by remember { mutableStateOf(false) }
+    var disclaimerOpen by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -247,6 +250,40 @@ fun MineScreen(
                 }
             }
 
+            // —— 免责声明与免费申明 ——
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { disclaimerOpen = true },
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        Icons.Rounded.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("免责声明与免费申明", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "本软件完全免费开源 · 如遇收费请退款举报",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        "›",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             state.error?.let { ErrorNotice(it) }
 
             // —— 退出登录 ——
@@ -265,6 +302,14 @@ fun MineScreen(
                     .padding(bottom = 20.dp),
             )
         }
+    }
+
+    if (disclaimerOpen) {
+        DisclaimerDialog(
+            requireConfirmTyping = false,
+            onAccept = { disclaimerOpen = false },
+            onDecline = { disclaimerOpen = false },
+        )
     }
 
     if (diagOpen) {

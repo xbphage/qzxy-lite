@@ -6,6 +6,7 @@ import com.qzxy.lite.ble.BleWaterMeterClient
 import com.qzxy.lite.core.ApiException
 import com.qzxy.lite.core.ApiResponse
 import com.qzxy.lite.core.dataOrThrow
+import com.qzxy.lite.core.formatColonMac
 import com.qzxy.lite.core.successOrThrow
 import com.qzxy.lite.data.api.DeviceApi
 import com.qzxy.lite.data.api.OrderApi
@@ -15,6 +16,7 @@ import com.qzxy.lite.data.model.BluetoothUploadData
 import com.qzxy.lite.data.model.MoneyEstimate
 import com.qzxy.lite.data.model.OrderResult
 import com.qzxy.lite.data.session.SessionStore
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -31,9 +33,14 @@ class BathRepository(
     private val deviceApi: DeviceApi? = null,
 ) {
 
-    /** 记录最近一次 0x23 查询得到的水表动态随机数，供关阀结算上报使用 */
+    /** 记录最近一次 0x23 查询得到的水表动态随机数与协议版本，供关阀结算上报使用。 */
     @Volatile
     private var lastRandomNumber: String? = null
+    @Volatile
+    private var lastProtocolType: String? = null
+
+    /** 云端设备元数据缓存（key = `projectId:COLON_MAC`），避免重复开阀/绑定多次查 `device/info/mac`。 */
+    private val cloudDeviceCache = ConcurrentHashMap<String, BathDevice>()
 
     // ==================== 1. TCP 在线水表链路 ====================
 
@@ -104,118 +111,113 @@ class BathRepository(
         onBleStatus("正在连接水表蓝牙...")
         client.connect(deviceMac).getOrThrow()
 
-        onBleStatus("正在读取水表状态与认证参数...")
-        val queryResult = client.queryDevice().getOrThrow()
-        Log.d(TAG, "BLE Query success: $queryResult")
+        try {
+            onBleStatus("正在读取水表状态与认证参数...")
+            val queryResult = client.queryDevice().getOrThrow()
+            Log.d(TAG, "BLE Query success: $queryResult")
 
-        onBleStatus("正在向云端获取设备信息...")
-        // 官方链路对比：官方在进入开阀流程前，必须先获取云端登记的 DeviceInfo (包含 DevID, Dsbtypeid 等)。
-        // 水表 BLE 0x23 响应中包含的 deviceId (即 bArrA[9..12]) 是水表 EEPROM 内置的物理芯片/出厂序号，
-        // 云端数据库中按 DevID 查找设备。若直接向接口发送水表内部物理 ID，云端因找不到设备记录报错 519 "找不到设备"！
-        val cloudDevice: BathDevice? = runCatching {
-            deviceApi?.deviceByMac(macAddress = queryResult.deviceMac)?.data
-        }.getOrNull() ?: runCatching {
-            val uncoloned = queryResult.deviceMac.replace(":", "")
-            deviceApi?.deviceByMac(macAddress = uncoloned)?.data
-        }.getOrNull() ?: runCatching {
-            deviceApi?.deviceByMac(macAddress = deviceMac)?.data
-        }.getOrNull()
-
-        val cloudDevId = cloudDevice?.cloudDeviceId
-        val deviceIdStr = if (!cloudDevId.isNullOrBlank()) {
-            Log.d(TAG, "Using cloud registered DevID: $cloudDevId (BLE EEPROM ID was ${queryResult.deviceId})")
-            cloudDevId
-        } else {
-            Log.w(TAG, "Cloud DevID not found for ${queryResult.deviceMac}, falling back to BLE EEPROM ID: ${queryResult.deviceId}")
-            queryResult.deviceId.toString()
-        }
-
-        // 官方沐浴水表大类 ID 默认是 4 (Dsbtypeid=4)，小类默认是 1 (DevTypeID=1)
-        val resolvedBigTypeId = cloudDevice?.resolvedBigTypeId ?: if (bigTypeId == "1") "4" else bigTypeId
-        val resolvedSmallTypeId = cloudDevice?.resolvedSmallTypeId ?: smallTypeId
-
-        onBleStatus("正在向云端申请开阀授权指令...")
-        val macWithoutColons = queryResult.deviceMac.replace(":", "").uppercase()
-        val randomNumber = queryResult.randomNumber
-        lastRandomNumber = randomNumber
-        val protocolType = queryResult.protocolType
-        val macType = queryResult.macType
-
-        // 构造签名参数并执行签名（使用云端 DevID）
-        val signParams = mapOf(
-            "telephone" to phone,
-            "deviceId" to deviceIdStr,
-            "xfModel" to "0",
-            "randomNumber" to randomNumber,
-        )
-        val signature = JniUtils.sign(session.loginCode, signParams)
-
-        // 请求云端开阀指令（仅网络/HTTP/网关错误时回退离线端点；业务错误如 204 金额不足、531 防连点直接透传）
-        val downRateResp = try {
-            val r = orderApi.bluetoothRateOrder(
-                deviceId = deviceIdStr,
-                macAddress = macWithoutColons,
-                macType = macType,
-                bigTypeId = resolvedBigTypeId,
-                smallTypeId = resolvedSmallTypeId,
-                protocolType = protocolType,
-                randomNumber = randomNumber,
-                signature = signature,
-                xfModel = "0",
-                couponId = couponId,
-            )
-            if (r.errorCode == 0 && r.data != null) {
-                r
-            } else if (r.errorCode == ApiException.INSUFFICIENT_BALANCE_CODE) {
-                val withholdHint = cloudDevice?.withholdMoney
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { "（设备开阀需预扣 ¥$it，请确认账户余额充足或前往钱包充值）" }
-                    .orEmpty()
-                throw ApiException(r.errorCode, "${r.effectiveMessage}$withholdHint")
+            onBleStatus("正在向云端获取设备信息...")
+            // 官方链路要求提交云端登记的 DevID（device/info/mac），不可传水表 0x23 的 EEPROM 物理 ID，否则报 519。
+            val cloudDevice = resolveCloudDevice(queryResult.deviceMac, deviceMac)
+            val cloudDevId = cloudDevice?.cloudDeviceId
+            val deviceIdStr = if (!cloudDevId.isNullOrBlank()) {
+                Log.d(TAG, "Using cloud registered DevID: $cloudDevId (BLE EEPROM ID was ${queryResult.deviceId})")
+                cloudDevId
             } else {
-                throw ApiException(r.errorCode, r.effectiveMessage)
+                Log.w(TAG, "Cloud DevID not found for ${queryResult.deviceMac}, falling back to BLE EEPROM ID: ${queryResult.deviceId}")
+                queryResult.deviceId.toString()
             }
-        } catch (e: Exception) {
-            if (!shouldFallbackToOffline(e)) throw e
-            Log.w(TAG, "bluetoothRateOrder network/gateway failed (${e.message}), trying offline endpoint")
-            orderApi.offlineBluetoothRateOrder(
-                deviceId = deviceIdStr,
-                macAddress = macWithoutColons,
-                macType = macType,
-                bigTypeId = resolvedBigTypeId,
-                smallTypeId = resolvedSmallTypeId,
-                protocolType = protocolType,
-                randomNumber = randomNumber,
-                signature = signature,
-                xfModel = "0",
-                couponId = couponId,
+
+            // 官方沐浴水表大类 ID 默认是 4 (Dsbtypeid=4)，小类默认是 1 (DevTypeID=1)
+            val resolvedBigTypeId = cloudDevice?.resolvedBigTypeId ?: if (bigTypeId == "1") "4" else bigTypeId
+            val resolvedSmallTypeId = cloudDevice?.resolvedSmallTypeId ?: smallTypeId
+
+            onBleStatus("正在向云端申请开阀授权指令...")
+            val macWithoutColons = queryResult.deviceMac.replace(":", "").uppercase()
+            val randomNumber = queryResult.randomNumber
+            lastRandomNumber = randomNumber
+            val protocolType = queryResult.protocolType
+            lastProtocolType = protocolType
+            val macType = queryResult.macType
+
+            val signature = JniUtils.sign(
+                session.loginCode,
+                mapOf(
+                    "telephone" to phone,
+                    "deviceId" to deviceIdStr,
+                    "xfModel" to "0",
+                    "randomNumber" to randomNumber,
+                ),
             )
-        }
 
-        val rateData = downRateResp.dataOrThrow()
-        val downDataHex = rateData.downData ?: throw IllegalStateException("服务端未下发开阀指令")
+            val downRateResp = callWithOfflineFallback(
+                actionName = "bluetoothRateOrder",
+                primary = {
+                    orderApi.bluetoothRateOrder(
+                        deviceId = deviceIdStr,
+                        macAddress = macWithoutColons,
+                        macType = macType,
+                        bigTypeId = resolvedBigTypeId,
+                        smallTypeId = resolvedSmallTypeId,
+                        protocolType = protocolType,
+                        randomNumber = randomNumber,
+                        signature = signature,
+                        xfModel = "0",
+                        couponId = couponId,
+                    )
+                },
+                offline = {
+                    orderApi.offlineBluetoothRateOrder(
+                        deviceId = deviceIdStr,
+                        macAddress = macWithoutColons,
+                        macType = macType,
+                        bigTypeId = resolvedBigTypeId,
+                        smallTypeId = resolvedSmallTypeId,
+                        protocolType = protocolType,
+                        randomNumber = randomNumber,
+                        signature = signature,
+                        xfModel = "0",
+                        couponId = couponId,
+                    )
+                },
+                onError = { r ->
+                    if (r.errorCode == ApiException.INSUFFICIENT_BALANCE_CODE) {
+                        val withholdHint = cloudDevice?.withholdMoney
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { "（设备开阀需预扣 ¥$it，请确认账户余额充足或前往钱包充值）" }
+                            .orEmpty()
+                        throw ApiException(r.errorCode, "${r.effectiveMessage}$withholdHint")
+                    }
+                    throw ApiException(r.errorCode, r.effectiveMessage)
+                },
+            )
 
-        onBleStatus("正在向水表写入开阀指令...")
-        val writeResult = client.downRate(downDataHex)
-        if (writeResult.isFailure) {
-            // 上报开阀失败
-            rateData.orderNo?.let { orderNo ->
-                runCatching { orderApi.bluetoothUploadFail(orderNo, "BLE_WRITE_FAILED") }
+            val rateData = downRateResp.dataOrThrow()
+            val downDataHex = rateData.downData ?: throw IllegalStateException("服务端未下发开阀指令")
+
+            onBleStatus("正在向水表写入开阀指令...")
+            val writeResult = client.downRate(downDataHex)
+            if (writeResult.isFailure) {
+                rateData.orderNo?.let { orderNo ->
+                    runCatching { orderApi.bluetoothUploadFail(orderNo, "BLE_WRITE_FAILED") }
+                }
+                throw writeResult.exceptionOrNull() ?: IllegalStateException("开阀指令下发失败")
             }
-            throw writeResult.exceptionOrNull() ?: IllegalStateException("开阀指令下发失败")
-        }
 
-        onBleStatus("水表已开阀出水")
-        return rateData
+            onBleStatus("水表已开阀出水")
+            return rateData
+        } catch (t: Throwable) {
+            client.disconnect()
+            throw t
+        }
     }
 
     /**
      * 蓝牙脱机关阀全流程：
-     * ① 向水表发送 Cmd 0x22 关阀
-     * ② 向水表发送 Cmd 0x85 采集本次消费记录 (xfData)
+     * ① 确保蓝牙连接（若中途断连则自动重连）并发送 Cmd 0x22 关阀
+     * ② 发送 Cmd 0x85 采集本次消费记录 (xfData)
      * ③ 组装签名上传云端结算扣款 (upload/bluetooth/data)
-     * ④ 向水表发送 Cmd 0x86 确认记录入库
-     * ⑤ 断开蓝牙连接
+     * ④ 发送 Cmd 0x86 确认记录入库，通知订单关闭，最终释放 GATT 连接
      */
     suspend fun closeBle(
         deviceMac: String,
@@ -226,60 +228,120 @@ class BathRepository(
         val session = sessionStore?.current() ?: throw IllegalStateException("未登录，请先登录")
         val phone = session.telephone
 
-        onBleStatus("正在发送关阀指令...")
-        client.closeValve().getOrThrow()
+        try {
+            if (!client.isConnected) {
+                onBleStatus("正在重新连接水表蓝牙...")
+                client.connect(deviceMac).getOrThrow()
+            }
+            if (lastRandomNumber == null) {
+                runCatching { client.queryDevice().getOrThrow() }.onSuccess { q ->
+                    lastRandomNumber = q.randomNumber
+                    lastProtocolType = q.protocolType
+                }
+            }
 
-        onBleStatus("正在读取水表消费账单...")
-        val record = client.collectData().getOrThrow()
-        Log.d(TAG, "BLE Collect record: $record")
+            onBleStatus("正在发送关阀指令...")
+            client.closeValve().getOrThrow()
 
-        onBleStatus("正在上传水表账单并结算扣费...")
-        val signParams = mapOf(
-            "loginCode" to session.loginCode,
-            "telephone" to phone,
-            "xfData" to record.xfDataHex,
-        )
-        val signature = JniUtils.sign(session.loginCode, signParams)
-        val uploadRandomNumber = lastRandomNumber ?: "00000000"
+            onBleStatus("正在读取水表消费账单...")
+            val record = client.collectData().getOrThrow()
+            Log.d(TAG, "BLE Collect record: $record")
 
-        val uploadResp = try {
-            val r = orderApi.bluetoothUploadData(
-                protocolType = "10",
-                randomNumber = uploadRandomNumber,
-                xfData = record.xfDataHex,
-                signature = signature,
+            onBleStatus("正在上传水表账单并结算扣费...")
+            val signature = JniUtils.sign(
+                session.loginCode,
+                mapOf(
+                    "loginCode" to session.loginCode,
+                    "telephone" to phone,
+                    "xfData" to record.xfDataHex,
+                ),
             )
-            if (r.errorCode == 0 && r.data != null) r else throw ApiException(r.errorCode, r.effectiveMessage)
-        } catch (e: Exception) {
-            if (!shouldFallbackToOffline(e)) throw e
-            Log.w(TAG, "bluetoothUploadData network/gateway failed (${e.message}), trying offline endpoint")
-            orderApi.offlineBluetoothUploadData(
-                protocolType = "10",
-                randomNumber = uploadRandomNumber,
-                xfData = record.xfDataHex,
-                signature = signature,
+            val uploadRandomNumber = lastRandomNumber ?: "00000000"
+            val protocolType = lastProtocolType?.takeIf { it.isNotBlank() } ?: "10"
+
+            val uploadResp = callWithOfflineFallback(
+                actionName = "bluetoothUploadData",
+                primary = {
+                    orderApi.bluetoothUploadData(
+                        protocolType = protocolType,
+                        randomNumber = uploadRandomNumber,
+                        xfData = record.xfDataHex,
+                        signature = signature,
+                    )
+                },
+                offline = {
+                    orderApi.offlineBluetoothUploadData(
+                        protocolType = protocolType,
+                        randomNumber = uploadRandomNumber,
+                        xfData = record.xfDataHex,
+                        signature = signature,
+                    )
+                },
             )
-        }
 
-        // 确认水表存储
-        onBleStatus("正在同步水表确认状态...")
-        runCatching {
-            client.confirmStorage(
-                consumeDateHex = record.consumeDateHex,
-                projectId = record.projectId,
-                accountId = record.accountId,
-                deviceId = record.deviceId,
-                recordIndex = record.recordIndex,
-            )
-        }
+            onBleStatus("正在同步水表确认状态...")
+            runCatching {
+                client.confirmStorage(
+                    consumeDateHex = record.consumeDateHex,
+                    projectId = record.projectId,
+                    accountId = record.accountId,
+                    deviceId = record.deviceId,
+                    recordIndex = record.recordIndex,
+                )
+            }
 
-        if (!orderNo.isNullOrBlank()) {
-            runCatching { orderApi.bathroomOrderClosed(orderNo) }
-        }
+            if (!orderNo.isNullOrBlank()) {
+                runCatching { orderApi.bathroomOrderClosed(orderNo) }
+            }
 
-        client.disconnect()
-        onBleStatus("结账完成")
-        return uploadResp.dataOrThrow()
+            onBleStatus("结账完成")
+            return uploadResp.dataOrThrow()
+        } finally {
+            client.disconnect()
+        }
+    }
+
+    /** 按 MAC 查询云端设备信息（自动按冒号/无冒号格式去重查询，并按当前校园缓存命中结果）。 */
+    suspend fun resolveCloudDevice(primaryMac: String, fallbackMac: String = ""): BathDevice? {
+        val api = deviceApi ?: return null
+        val projectId = sessionStore?.current()?.projectId.orEmpty()
+        val candidates = buildMacCandidates(primaryMac, fallbackMac)
+        for (mac in candidates) {
+            cloudDeviceCache["$projectId:${formatColonMac(mac)}"]?.let { return it }
+        }
+        for (mac in candidates) {
+            val device = runCatching { api.deviceByMac(macAddress = mac).data }.getOrNull() ?: continue
+            if (!device.cloudDeviceId.isNullOrBlank()) {
+                cloudDeviceCache["$projectId:${formatColonMac(mac)}"] = device
+            }
+            return device
+        }
+        return null
+    }
+
+    private fun buildMacCandidates(primaryMac: String, fallbackMac: String): List<String> =
+        buildList {
+            for (raw in listOf(primaryMac, fallbackMac)) {
+                val trimmed = raw.trim()
+                if (trimmed.isEmpty()) continue
+                add(formatColonMac(trimmed))
+                val compact = trimmed.replace(":", "").uppercase()
+                if (compact.isNotEmpty()) add(compact)
+            }
+        }.distinct()
+
+    private suspend fun <T> callWithOfflineFallback(
+        actionName: String,
+        primary: suspend () -> ApiResponse<T>,
+        offline: suspend () -> ApiResponse<T>,
+        onError: (ApiResponse<T>) -> Nothing = { r -> throw ApiException(r.errorCode, r.effectiveMessage) },
+    ): ApiResponse<T> = try {
+        val r = primary()
+        if (r.errorCode == 0 && r.data != null) r else onError(r)
+    } catch (e: Exception) {
+        if (!shouldFallbackToOffline(e)) throw e
+        Log.w(TAG, "$actionName network/gateway failed (${e.message}), trying offline endpoint")
+        offline()
     }
 
     fun disconnectBle() {

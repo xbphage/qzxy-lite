@@ -1,5 +1,6 @@
 package com.qzxy.lite
 
+import android.app.Activity
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -45,6 +46,7 @@ import com.qzxy.lite.data.session.Session
 import com.qzxy.lite.ui.bath.BathScreen
 import com.qzxy.lite.ui.bill.BillDetailScreen
 import com.qzxy.lite.ui.campus.CampusScreen
+import com.qzxy.lite.ui.common.DisclaimerDialog
 import com.qzxy.lite.ui.mine.MineScreen
 import com.qzxy.lite.ui.login.LoginScreen
 import com.qzxy.lite.ui.scan.ScanScreen
@@ -69,6 +71,7 @@ class MainActivity : ComponentActivity() {
 private fun QzxyNavHost() {
     val container = LocalContext.current.appContainer
     val session: Session? by container.sessionStore.session.collectAsState()
+    val disclaimerAccepted by container.disclaimerStore.accepted.collectAsState()
     val navController = rememberNavController()
     // 首次组合时决定起点：已有会话直接进设备列表，否则进登录页（登录后 id 自动获取）。
     val startDestination = remember { if (session?.isLoggedIn == true) Routes.CAMPUS else Routes.LOGIN }
@@ -134,9 +137,11 @@ private fun QzxyNavHost() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        delay(1_500)
-        checkUpdate(notifyWhenLatest = false)
+    LaunchedEffect(disclaimerAccepted) {
+        if (disclaimerAccepted) {
+            delay(1_500)
+            checkUpdate(notifyWhenLatest = false)
+        }
     }
 
     Scaffold(
@@ -245,6 +250,15 @@ private fun QzxyNavHost() {
                 WalletScreen(onBack = { goBack() })
             }
         }
+    }
+
+    // —— 首次使用强制免责声明（须完整输入确认句；未确认前阻塞全部交互） ——
+    if (!disclaimerAccepted) {
+        DisclaimerDialog(
+            requireConfirmTyping = true,
+            onAccept = { container.disclaimerStore.markAccepted() },
+            onDecline = { (appContext as? Activity)?.finishAffinity() },
+        )
     }
 
     // —— 更新弹窗：检查 → 下载（进度）→ 开始安装；不跳浏览器。 ——

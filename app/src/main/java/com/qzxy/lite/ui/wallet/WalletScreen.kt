@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -37,6 +38,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qzxy.lite.appContainer
 import com.qzxy.lite.data.repository.PayChannel
@@ -56,6 +60,16 @@ fun WalletScreen(onBack: () -> Unit) {
     val vm: WalletViewModel = viewModel { WalletViewModel(context.appContainer.walletRepository) }
     val state by vm.state.collectAsState()
     val qz = LocalQzColors.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // 每次回到钱包页（含关阀后切回 Tab）自动静默刷新一次余额，避免 restoreState 展示旧余额
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.refresh(initial = false)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Box(
         Modifier

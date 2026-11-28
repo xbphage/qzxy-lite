@@ -12,6 +12,7 @@ import com.qzxy.lite.ui.common.toUserMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -36,9 +37,15 @@ class WalletViewModel(private val wallet: WalletRepository) : ViewModel() {
 
     init {
         refresh(initial = true)
+        viewModelScope.launch {
+            wallet.latestBalance.filterNotNull().collect { latest ->
+                _state.update { it.copy(balance = latest) }
+            }
+        }
     }
 
     fun refresh(initial: Boolean = false) {
+        if (_state.value.loading || _state.value.refreshing) return
         viewModelScope.launch {
             _state.update {
                 if (initial) it.copy(loading = true, error = null)

@@ -17,6 +17,7 @@ data class BathSnapshot(
     val phase: BathPhase = BathPhase.IDLE,
     val orderNo: String? = null,
     val message: String? = null,
+    val isBleMode: Boolean = false,
     val updatedAt: Long = 0L,
 )
 

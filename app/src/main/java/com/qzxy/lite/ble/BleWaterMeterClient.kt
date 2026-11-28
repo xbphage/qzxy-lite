@@ -12,15 +12,16 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.qzxy.lite.core.formatColonMac
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -40,7 +41,6 @@ import java.util.UUID
 class BleWaterMeterClient(
     private val context: Context,
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mutex = Mutex()
 
     private val bluetoothManager: BluetoothManager? =
@@ -48,9 +48,13 @@ class BleWaterMeterClient(
     private val bluetoothAdapter: BluetoothAdapter?
         get() = bluetoothManager?.adapter
 
-    private var bluetoothGatt: BluetoothGatt? = null
-    private var writeChar: BluetoothGattCharacteristic? = null
-    private var notifyChar: BluetoothGattCharacteristic? = null
+    @Volatile private var bluetoothGatt: BluetoothGatt? = null
+    @Volatile private var writeChar: BluetoothGattCharacteristic? = null
+    @Volatile private var notifyChar: BluetoothGattCharacteristic? = null
+
+    /** 当前是否已建立 GATT 连接并就绪通知/写入特征值。 */
+    val isConnected: Boolean
+        get() = bluetoothGatt != null && writeChar != null && notifyChar != null
 
     private var connectionDeferred: CompletableDeferred<Boolean>? = null
     private var readyDeferred: CompletableDeferred<Boolean>? = null
@@ -171,7 +175,7 @@ class BleWaterMeterClient(
         val adapter = bluetoothAdapter ?: return Result.failure(IllegalStateException("设备不支持蓝牙"))
         if (!adapter.isEnabled) return Result.failure(IllegalStateException("蓝牙未开启，请先打开手机蓝牙"))
 
-        val cleanMac = normalizeMac(deviceMac)
+        val cleanMac = formatColonMac(deviceMac)
         Log.d(TAG, "Connecting to BLE water meter: $cleanMac")
 
         val device: BluetoothDevice = try {
@@ -237,99 +241,97 @@ class BleWaterMeterClient(
     }
 
     /**
-     * 查询水表参数与随机数 (Cmd 0x23)。
+     * 发送命令并同步订阅期待的响应帧。
+     * 先用 UNDISPATCHED 启动订阅再发送数据，避免 MCU 在写包间隔内快速回包导致漏帧。
      */
+    private suspend fun sendAndAwaitFrame(
+        cmd: Int,
+        cmdBytes: ByteArray,
+        timeoutMs: Long,
+        timeoutMessage: String,
+    ): Result<DecodedFrame> = coroutineScope {
+        val deferred = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeoutOrNull(timeoutMs) {
+                receivedFrames
+                    .mapNotNull { BleFrameCodec.decodeFrame(it) }
+                    .first { it.cmd == cmd }
+            }
+        }
+        try {
+            writeRaw(cmdBytes)
+        } catch (t: Throwable) {
+            deferred.cancel()
+            return@coroutineScope Result.failure(t)
+        }
+        val frame = deferred.await()
+            ?: return@coroutineScope Result.failure(IllegalStateException(timeoutMessage))
+        Result.success(frame)
+    }
+
+    /** 查询水表参数与随机数 (Cmd 0x23)。 */
     suspend fun queryDevice(timeoutMs: Long = 4000L): Result<BleDeviceQueryResult> {
         val cmdBytes = BleFrameCodec.encodeCommand(BleFrameCodec.CMD_QUERY_DEVICE, byteArrayOf(0x00))
-        writeRaw(cmdBytes)
-
-        val frame = withTimeoutOrNull(timeoutMs) {
-            receivedFrames.first { line ->
-                val f = BleFrameCodec.decodeFrame(line)
-                f != null && f.cmd == BleFrameCodec.CMD_QUERY_DEVICE
-            }
-        } ?: return Result.failure(IllegalStateException("查询水表参数响应超时"))
-
-        val decoded = BleFrameCodec.decodeFrame(frame)
-        val result = decoded?.let { BleFrameCodec.parseQueryResponse(it.payload) }
-        return if (result != null) {
-            Result.success(result)
-        } else {
-            Result.failure(IllegalStateException("解析水表响应失败"))
-        }
+        val decoded = sendAndAwaitFrame(
+            cmd = BleFrameCodec.CMD_QUERY_DEVICE,
+            cmdBytes = cmdBytes,
+            timeoutMs = timeoutMs,
+            timeoutMessage = "查询水表参数响应超时",
+        ).getOrElse { return Result.failure(it) }
+        val result = BleFrameCodec.parseQueryResponse(decoded.payload)
+        return result?.let { Result.success(it) }
+            ?: Result.failure(IllegalStateException("解析水表响应失败"))
     }
 
-    /**
-     * 下发费率开阀 (Cmd 0x21)。
-     */
+    /** 下发费率开阀 (Cmd 0x21)。 */
     suspend fun downRate(downDataHex: String, timeoutMs: Long = 5000L): Result<Unit> {
-        val payload = BleFrameCodec.hexStringToByteArray(downDataHex)
+        val payload = runCatching { BleFrameCodec.hexStringToByteArray(downDataHex) }
+            .getOrElse { return Result.failure(IllegalStateException("开阀指令格式无效: ${it.message}")) }
         val cmdBytes = BleFrameCodec.encodeCommand(BleFrameCodec.CMD_DOWN_RATE, payload)
-        writeRaw(cmdBytes)
-
-        val frame = withTimeoutOrNull(timeoutMs) {
-            receivedFrames.first { line ->
-                val f = BleFrameCodec.decodeFrame(line)
-                f != null && f.cmd == BleFrameCodec.CMD_DOWN_RATE
-            }
-        } ?: return Result.failure(IllegalStateException("水表下发费率开阀响应超时"))
-
-        val decoded = BleFrameCodec.decodeFrame(frame)
-        return if (decoded != null && decoded.isSuccess) {
+        val decoded = sendAndAwaitFrame(
+            cmd = BleFrameCodec.CMD_DOWN_RATE,
+            cmdBytes = cmdBytes,
+            timeoutMs = timeoutMs,
+            timeoutMessage = "水表下发费率开阀响应超时",
+        ).getOrElse { return Result.failure(it) }
+        return if (decoded.isSuccess) {
             Result.success(Unit)
         } else {
-            Result.failure(IllegalStateException("水表开阀失败（错误码 0x${decoded?.payload?.getOrNull(0)?.toInt()?.toString(16)}）"))
+            val errByte = decoded.payload.getOrNull(0)?.toInt()?.and(0xFF)?.toString(16)
+            Result.failure(IllegalStateException("水表开阀失败（错误码 0x$errByte）"))
         }
     }
 
-    /**
-     * 结束消费关阀 (Cmd 0x22)。
-     */
+    /** 结束消费关阀 (Cmd 0x22)。 */
     suspend fun closeValve(timeoutMs: Long = 4000L): Result<Unit> {
         val cmdBytes = BleFrameCodec.encodeCommand(BleFrameCodec.CMD_CLOSE_VALVE, byteArrayOf(0x00))
-        writeRaw(cmdBytes)
-
-        val frame = withTimeoutOrNull(timeoutMs) {
-            receivedFrames.first { line ->
-                val f = BleFrameCodec.decodeFrame(line)
-                f != null && f.cmd == BleFrameCodec.CMD_CLOSE_VALVE
-            }
-        } ?: return Result.failure(IllegalStateException("水表关阀响应超时"))
-
-        val decoded = BleFrameCodec.decodeFrame(frame)
-        return if (decoded != null && decoded.isSuccess) {
+        val decoded = sendAndAwaitFrame(
+            cmd = BleFrameCodec.CMD_CLOSE_VALVE,
+            cmdBytes = cmdBytes,
+            timeoutMs = timeoutMs,
+            timeoutMessage = "水表关阀响应超时",
+        ).getOrElse { return Result.failure(it) }
+        return if (decoded.isSuccess) {
             Result.success(Unit)
         } else {
             Result.failure(IllegalStateException("水表关阀返回未成功"))
         }
     }
 
-    /**
-     * 采集消费账单数据 (Cmd 0x85)。
-     */
+    /** 采集消费账单数据 (Cmd 0x85)。 */
     suspend fun collectData(timeoutMs: Long = 4000L): Result<BleConsumeRecord> {
         val cmdBytes = BleFrameCodec.encodeCommand(BleFrameCodec.CMD_COLLECT_DATA, byteArrayOf(0x00))
-        writeRaw(cmdBytes)
-
-        val frame = withTimeoutOrNull(timeoutMs) {
-            receivedFrames.first { line ->
-                val f = BleFrameCodec.decodeFrame(line)
-                f != null && f.cmd == BleFrameCodec.CMD_COLLECT_DATA
-            }
-        } ?: return Result.failure(IllegalStateException("采集水表消费账单响应超时"))
-
-        val decoded = BleFrameCodec.decodeFrame(frame)
-        val result = decoded?.let { BleFrameCodec.parseCollectResponse(it.payload) }
-        return if (result != null) {
-            Result.success(result)
-        } else {
-            Result.failure(IllegalStateException("解析水表消费账单失败"))
-        }
+        val decoded = sendAndAwaitFrame(
+            cmd = BleFrameCodec.CMD_COLLECT_DATA,
+            cmdBytes = cmdBytes,
+            timeoutMs = timeoutMs,
+            timeoutMessage = "采集水表消费账单响应超时",
+        ).getOrElse { return Result.failure(it) }
+        val result = BleFrameCodec.parseCollectResponse(decoded.payload)
+        return result?.let { Result.success(it) }
+            ?: Result.failure(IllegalStateException("解析水表消费账单失败"))
     }
 
-    /**
-     * 确认水表记录入库存储 (Cmd 0x86)。
-     */
+    /** 确认水表记录入库存储 (Cmd 0x86)。 */
     suspend fun confirmStorage(
         consumeDateHex: String,
         projectId: Int,
@@ -345,17 +347,13 @@ class BleWaterMeterClient(
             deviceId = deviceId,
             recordIndex = recordIndex,
         )
-        writeRaw(cmdBytes)
-
-        val frame = withTimeoutOrNull(timeoutMs) {
-            receivedFrames.first { line ->
-                val f = BleFrameCodec.decodeFrame(line)
-                f != null && f.cmd == BleFrameCodec.CMD_CONFIRM_STORAGE
-            }
-        } ?: return Result.failure(IllegalStateException("确认水表存储超时"))
-
-        val decoded = BleFrameCodec.decodeFrame(frame)
-        return if (decoded != null && decoded.isSuccess) {
+        val decoded = sendAndAwaitFrame(
+            cmd = BleFrameCodec.CMD_CONFIRM_STORAGE,
+            cmdBytes = cmdBytes,
+            timeoutMs = timeoutMs,
+            timeoutMessage = "确认水表存储超时",
+        ).getOrElse { return Result.failure(it) }
+        return if (decoded.isSuccess) {
             Result.success(Unit)
         } else {
             Result.failure(IllegalStateException("确认水表存储失败"))
@@ -377,14 +375,6 @@ class BleWaterMeterClient(
         writeChar = null
         notifyChar = null
         synchronized(rxBuffer) { rxBuffer.reset() }
-    }
-
-    private fun normalizeMac(mac: String): String {
-        val clean = mac.replace(":", "").uppercase()
-        if (clean.length == 12) {
-            return clean.chunked(2).joinToString(":")
-        }
-        return mac
     }
 
     companion object {

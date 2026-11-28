@@ -4,18 +4,19 @@ import com.qzxy.lite.core.ApiConstants
 import com.qzxy.lite.core.ApiException
 import com.qzxy.lite.core.DiagLog
 import com.qzxy.lite.core.dataOrThrow
+import com.qzxy.lite.core.md5Hex as coreMd5Hex
 import com.qzxy.lite.core.successOrThrow
 import com.qzxy.lite.data.api.AuthApi
 import com.qzxy.lite.data.api.BindProjectRequest
 import com.qzxy.lite.data.api.LoginRequest
 import com.qzxy.lite.data.api.SendCodeRequest
+import com.qzxy.lite.data.model.LoginResult
 import com.qzxy.lite.data.model.UserInfo
 import com.qzxy.lite.data.network.NetworkModule
 import com.qzxy.lite.data.session.Session
 import com.qzxy.lite.data.session.SessionStore
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.builtins.serializer
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -38,10 +39,7 @@ class AuthRepository(
         telephone.take(3) + telephone.takeLast(4) + "klcx"
     )
 
-    fun md5Hex(text: String): String {
-        val digest = MessageDigest.getInstance("MD5").digest(text.toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
-    }
+    fun md5Hex(text: String): String = coreMd5Hex(text)
 
     /**
      * 密码登录（绕开验证码频控）：POST v3-api/user/login，password=MD5(明文)。
@@ -212,39 +210,34 @@ class AuthRepository(
                 .header("Config-Keys", ApiConstants.CONFIG_KEYS)
                 .build()
 
-            val directClient = OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .build()
+            silentLoginClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return false
+                val body = resp.body?.string() ?: return false
+                val parsed = NetworkModule.json.decodeFromString(
+                    com.qzxy.lite.core.ApiResponse.serializer(LoginResult.serializer()),
+                    body,
+                )
+                if (parsed.errorCode != 0 && parsed.errorCode != 2) {
+                    // 密码错误等情况，清空无效的密码缓存
+                    if (parsed.errorCode == 12) sessionStore.clearCredentials()
+                    return false
+                }
 
-            val resp = directClient.newCall(req).execute()
-            if (!resp.isSuccessful) return false
-            val body = resp.body?.string() ?: return false
-            val root = NetworkModule.json.parseToJsonElement(body).jsonObject
-            val errorCode = root["errorCode"]?.toString()?.toIntOrNull() ?: -1
-            if (errorCode != 0 && errorCode != 2) {
-                // 密码错误等情况，清空无效的密码缓存
-                if (errorCode == 12) sessionStore.clearCredentials()
-                return false
+                val info = parsed.data?.merged() ?: return false
+                val loginCode = info.loginCode?.takeIf { it.isNotBlank() } ?: return false
+
+                sessionStore.update(
+                    Session(
+                        loginCode = loginCode,
+                        userId = info.userId?.takeIf { it.isNotBlank() } ?: cur?.userId.orEmpty(),
+                        accountId = info.accountId?.takeIf { it.isNotBlank() } ?: cur?.accountId.orEmpty(),
+                        projectId = info.projectId?.takeIf { it.isNotBlank() } ?: cur?.projectId.orEmpty(),
+                        telephone = phone,
+                    ),
+                    passwordMd5 = passMd5,
+                    keepLoggedIn = true,
+                )
             }
-
-            val data = root["data"]?.jsonObject ?: return false
-            val loginCode = data["loginCode"]?.toString()?.trim('"') ?: return false
-            val userId = data["userId"]?.toString()?.trim('"') ?: cur?.userId.orEmpty()
-            val accountId = data["accountId"]?.toString()?.trim('"') ?: cur?.accountId.orEmpty()
-            val projectId = data["projectId"]?.toString()?.trim('"') ?: cur?.projectId.orEmpty()
-
-            sessionStore.update(
-                Session(
-                    loginCode = loginCode,
-                    userId = userId,
-                    accountId = accountId,
-                    projectId = projectId,
-                    telephone = phone,
-                ),
-                passwordMd5 = passMd5,
-                keepLoggedIn = true,
-            )
             sessionStore.lastRenewalTime = System.currentTimeMillis()
             sessionStore.clearKickReason()
             DiagLog.d("Auth", "静默重新登录成功，新会话 loginCode 已无感续签")
@@ -290,5 +283,15 @@ class AuthRepository(
         is HttpException -> code() == 404 || code() == 405 || code() == 415
         is ApiException -> code == ApiException.METHOD_ERROR_CODE || code == 1
         else -> false
+    }
+
+    private companion object {
+        /** 复用独立轻量 OkHttpClient 供静默重连调用，避免每次分配连接池/线程池并避开主拦截器环路。 */
+        val silentLoginClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+        }
     }
 }

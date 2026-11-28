@@ -181,48 +181,20 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.size(10.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { vm.onKeepLoggedInChange(!state.keepLoggedIn) }
-                            .padding(vertical = 4.dp),
-                    ) {
-                        Checkbox(
-                            checked = state.keepLoggedIn,
-                            onCheckedChange = vm::onKeepLoggedInChange,
-                        )
-                        Spacer(Modifier.size(4.dp))
-                        Column {
-                            Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "自动保存会话并自动续期，关闭或重启 App 无需重新输入密码",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    KeepLoggedInRow(
+                        checked = state.keepLoggedIn,
+                        subtitle = "自动保存会话并自动续期，关闭或重启 App 无需重新输入密码",
+                        onCheckedChange = vm::onKeepLoggedInChange,
+                    )
                     Spacer(Modifier.size(16.dp))
-                    Button(
-                        onClick = { vm.loginWithPassword(onLoginSuccess) },
+                    LoginSubmitButton(
+                        text = "登录",
                         enabled = state.telephone.length == 11 &&
                             state.password.isNotBlank() &&
                             state.loginState !is UiState.Loading,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 52.dp),
-                    ) {
-                        if (state.loginState is UiState.Loading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
-                            Text("登录", style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
+                        loading = state.loginState is UiState.Loading,
+                        onClick = { vm.loginWithPassword(onLoginSuccess) },
+                    )
                 } else {
                     OutlinedTextField(
                         value = state.code,
@@ -260,48 +232,20 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         else -> {}
                     }
                     Spacer(Modifier.size(10.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { vm.onKeepLoggedInChange(!state.keepLoggedIn) }
-                            .padding(vertical = 4.dp),
-                    ) {
-                        Checkbox(
-                            checked = state.keepLoggedIn,
-                            onCheckedChange = vm::onKeepLoggedInChange,
-                        )
-                        Spacer(Modifier.size(4.dp))
-                        Column {
-                            Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "自动保存会话并自动续期，关闭或重启 App 无需重新获取验证码",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+                    KeepLoggedInRow(
+                        checked = state.keepLoggedIn,
+                        subtitle = "自动保存会话并自动续期，关闭或重启 App 无需重新获取验证码",
+                        onCheckedChange = vm::onKeepLoggedInChange,
+                    )
                     Spacer(Modifier.size(16.dp))
-                    Button(
-                        onClick = { vm.login(onLoginSuccess) },
+                    LoginSubmitButton(
+                        text = "验证码登录",
                         enabled = state.telephone.length == 11 &&
                             state.code.length >= 4 &&
                             state.loginState !is UiState.Loading,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 52.dp),
-                    ) {
-                        if (state.loginState is UiState.Loading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
-                            Text("验证码登录", style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
+                        loading = state.loginState is UiState.Loading,
+                        onClick = { vm.login(onLoginSuccess) },
+                    )
                 }
 
                 when (val ls = state.loginState) {
@@ -325,7 +269,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
 
                 Spacer(Modifier.size(6.dp))
                 Text(
-                    "仅用于本人账号操作与学习。",
+                    "本软件完全免费，如遇收费请退款举报 · 仅用于本人账号操作与学习。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -335,6 +279,62 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                         .padding(bottom = 8.dp),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun KeepLoggedInRow(
+    checked: Boolean,
+    subtitle: String,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 4.dp),
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+        Spacer(Modifier.size(4.dp))
+        Column {
+            Text("保持登录（对标原版）", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoginSubmitButton(
+    text: String,
+    enabled: Boolean,
+    loading: Boolean,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary,
+            )
+        } else {
+            Text(text, style = MaterialTheme.typography.labelLarge)
         }
     }
 }
