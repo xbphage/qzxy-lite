@@ -21,6 +21,9 @@ import com.qzxy.lite.data.repository.CampusRepository
 import com.qzxy.lite.data.repository.WalletRepository
 import com.qzxy.lite.data.session.Session
 import com.qzxy.lite.data.session.SessionStore
+import com.qzxy.lite.tmall.TmallWaterDeviceStore
+import com.qzxy.lite.tmall.TmallWaterRepository
+import com.qzxy.lite.tmall.TmallWaterSessionStore
 
 /** 轻量依赖容器：网络层按 SessionStore 当前值动态注入公共参数。 */
 class AppContainer(context: Context) {
@@ -82,4 +85,8 @@ class AppContainer(context: Context) {
     val bathRepository = BathRepository(orderApi, bleWaterMeterClient, sessionStore, deviceApi)
     val walletRepository = WalletRepository(walletApi, sessionStore)
     val billRepository = BillRepository(billApi)
+
+    val tmallSessionStore = TmallWaterSessionStore(context)
+    val tmallDeviceStore = TmallWaterDeviceStore(context)
+    val tmallWaterRepository = TmallWaterRepository(tmallSessionStore, tmallDeviceStore)
 }

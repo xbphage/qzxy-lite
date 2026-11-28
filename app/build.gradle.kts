@@ -107,6 +107,13 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
 
+    // 扫描饮水机二维码：CameraX 出帧 + ZXing 纯 Java 解码（不依赖 Google Play 服务）
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.core)
+
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

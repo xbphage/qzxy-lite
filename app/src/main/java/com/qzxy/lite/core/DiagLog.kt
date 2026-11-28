@@ -113,6 +113,7 @@ object DiagLog {
     private val SENSITIVE_KEYS = listOf(
         "loginCode", "wfwapiLoginCode", "telephone", "telPhone", "password",
         "signature", "secret", "token", "access_token", "smsCode", "identifier",
+        "cookie2", "_m_h5_tk", "x5sec", "_x5sec", "umidToken",
     )
 
     private fun logFile(context: Context): File? =

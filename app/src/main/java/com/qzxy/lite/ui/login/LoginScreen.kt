@@ -65,7 +65,10 @@ import com.qzxy.lite.ui.theme.SteamWaves
  * 短信验证码收为切换路径（验证码被限流时用），两套登录链均为实测代码路径。
  */
 @Composable
-fun LoginScreen(onLoginSuccess: () -> Unit) {
+fun LoginScreen(
+    onLoginSuccess: () -> Unit,
+    onOpenTmallWater: () -> Unit = {},
+) {
     val context = LocalContext.current
     val vm: LoginViewModel = viewModel {
         LoginViewModel(context.appContainer.authRepository, context.appContainer.sessionStore)
@@ -267,6 +270,11 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     TextButton(onClick = vm::toggleMode) {
                         Text(if (state.smsMode) "改用密码登录" else "改用短信验证码登录")
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    TextButton(onClick = onOpenTmallWater) {
+                        Text("仅使用天猫校园饮水？直接进入 ›")
                     }
                 }
 
