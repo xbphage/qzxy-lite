@@ -9,8 +9,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.qzxy.lite.core.DiagLog
+import com.qzxy.lite.ui.common.ScrollMoreHint
+import com.qzxy.lite.ui.common.lazyVerticalScrollbar
 
 /**
  * 诊断日志查看/导出弹窗（仅 diag 构建显示入口）。
@@ -43,10 +44,14 @@ fun DiagLogDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val listState = rememberLazyListState()
                 LazyColumn(
-                    Modifier
+                    state = listState,
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp),
+                        .weight(1f, fill = false)
+                        .padding(top = 8.dp)
+                        .lazyVerticalScrollbar(listState),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     items(lines) { line ->
@@ -56,6 +61,7 @@ fun DiagLogDialog(onDismiss: () -> Unit) {
                         item { Text("暂无日志", style = MaterialTheme.typography.bodySmall) }
                     }
                 }
+                ScrollMoreHint(visible = listState.canScrollForward)
             }
         },
         confirmButton = {

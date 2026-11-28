@@ -10,12 +10,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ChevronLeft
@@ -51,7 +55,10 @@ import com.qzxy.lite.appContainer
 import com.qzxy.lite.data.repository.BillItem
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.QzEmptyState
+import com.qzxy.lite.ui.common.ScrollMoreHint
 import com.qzxy.lite.ui.common.StatusDot
+import com.qzxy.lite.ui.common.lazyVerticalScrollbar
+import com.qzxy.lite.ui.common.verticalScrollbar
 import com.qzxy.lite.ui.theme.LocalQzColors
 import com.qzxy.lite.ui.theme.TabularNumbers
 import java.time.LocalDate
@@ -171,6 +178,7 @@ fun BillDetailScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(8.dp))
 
             // —— 流水列表 ——
+            val listState = rememberLazyListState()
             Box(Modifier.fillMaxSize()) {
                 if (state.loading) {
                     Row(
@@ -179,7 +187,10 @@ fun BillDetailScreen(onBack: () -> Unit) {
                     ) { CircularProgressIndicator() }
                 }
                 LazyColumn(
-                    Modifier.fillMaxSize(),
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .lazyVerticalScrollbar(listState),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(
                         start = 20.dp, end = 20.dp, bottom = 32.dp,
                     ),
@@ -223,19 +234,31 @@ fun BillDetailScreen(onBack: () -> Unit) {
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val detailScroll = rememberScrollState()
+                Column(Modifier.fillMaxWidth()) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     Spacer(Modifier.height(8.dp))
-                    DetailRow("订单号", bill.orderId)
-                    DetailRow("下单时间", bill.dealDate)
-                    DetailRow("用水时间", bill.consumeDate)
-                    DetailRow("上传时间", bill.uploadDate)
-                    DetailRow("上传状态", bill.upState)
-                    DetailRow("预扣金额", money(bill.preDeductMoney))
-                    DetailRow("实际消费", money(bill.consumeMoney))
-                    DetailRow("实扣金额", money(bill.consumeMoneyReal))
-                    DetailRow("赠送抵扣", money(bill.consumeMoneyGiven))
-                    DetailRow("支付方式", bill.typeName)
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScrollbar(detailScroll)
+                            .verticalScroll(detailScroll)
+                            .padding(end = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        DetailRow("订单号", bill.orderId)
+                        DetailRow("下单时间", bill.dealDate)
+                        DetailRow("用水时间", bill.consumeDate)
+                        DetailRow("上传时间", bill.uploadDate)
+                        DetailRow("上传状态", bill.upState)
+                        DetailRow("预扣金额", money(bill.preDeductMoney))
+                        DetailRow("实际消费", money(bill.consumeMoney))
+                        DetailRow("实扣金额", money(bill.consumeMoneyReal))
+                        DetailRow("赠送抵扣", money(bill.consumeMoneyGiven))
+                        DetailRow("支付方式", bill.typeName)
+                    }
+                    ScrollMoreHint(visible = detailScroll.canScrollForward)
                 }
             },
             confirmButton = {

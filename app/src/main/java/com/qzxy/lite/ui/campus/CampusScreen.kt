@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.QrCodeScanner
@@ -48,6 +49,7 @@ import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.QzEmptyState
 import com.qzxy.lite.ui.common.SoftNotice
 import com.qzxy.lite.ui.common.StatusDot
+import com.qzxy.lite.ui.common.lazyVerticalScrollbar
 import com.qzxy.lite.ui.theme.LocalQzColors
 import com.qzxy.lite.ui.theme.TabularNumbers
 import java.time.LocalTime
@@ -121,8 +123,12 @@ fun CampusScreen(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
+            val listState = rememberLazyListState()
             LazyColumn(
-                Modifier.fillMaxSize(),
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .lazyVerticalScrollbar(listState),
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {

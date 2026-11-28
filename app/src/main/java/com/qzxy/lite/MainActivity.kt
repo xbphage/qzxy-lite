@@ -177,7 +177,7 @@ private fun QzxyNavHost() {
     }
 
     LaunchedEffect(disclaimerAccepted) {
-        if (disclaimerAccepted) {
+        if (disclaimerAccepted && UpdateManager.isAutoUpdateEnabled(appContext)) {
             delay(1_500)
             checkUpdate(notifyWhenLatest = false)
         }
@@ -319,6 +319,15 @@ private fun QzxyNavHost() {
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                         color = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                     )
+                    TextButton(
+                        onClick = {
+                            UpdateManager.setAutoUpdateEnabled(appContext, false)
+                            readyUpdate = null
+                            Toast.makeText(appContext, "已关闭自动检查更新，可在「我的」中重新开启", Toast.LENGTH_SHORT).show()
+                        },
+                    ) {
+                        Text("关闭自动更新")
+                    }
                 }
             },
             confirmButton = {

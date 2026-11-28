@@ -13,6 +13,9 @@ import androidx.core.content.pm.PackageInfoCompat
 import com.qzxy.lite.BuildConfig
 import com.qzxy.lite.core.toHexString
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -63,12 +66,47 @@ object UpdateManager {
     private val KNOWN_PROXIES = listOf(PRIMARY_GH_PROXY, FALLBACK_GH_PROXY)
 
     const val PREFS = "qzxy_update"
+    private const val SETTINGS_PREFS = "qzxy_update_settings"
+    private const val KEY_AUTO_UPDATE_ENABLED = "auto_update_enabled"
     private const val KEY_READY_VERSION = "readyVersion"
     private const val KEY_READY_TITLE = "readyTitle"
     private const val KEY_READY_NOTES = "readyNotes"
     private const val KEY_READY_FILE = "readyFile"
     private const val KEY_READY_SHA256 = "readySha256"
     private const val KEY_PENDING_FILE = "pendingFile"
+
+    private val autoUpdateState = MutableStateFlow(true)
+    @Volatile private var autoUpdateLoaded = false
+
+    private fun ensureAutoUpdateLoaded(context: Context): StateFlow<Boolean> {
+        if (!autoUpdateLoaded) {
+            synchronized(this) {
+                if (!autoUpdateLoaded) {
+                    autoUpdateState.value = context.applicationContext
+                        .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+                        .getBoolean(KEY_AUTO_UPDATE_ENABLED, true)
+                    autoUpdateLoaded = true
+                }
+            }
+        }
+        return autoUpdateState.asStateFlow()
+    }
+
+    /** 响应式订阅「自动检查更新」开关状态，便于设置页与弹窗即时同步。 */
+    fun autoUpdateEnabledFlow(context: Context): StateFlow<Boolean> = ensureAutoUpdateLoaded(context)
+
+    /** 是否开启自动检查与静默下载更新（独立存储，不受 clearPending 影响）。 */
+    fun isAutoUpdateEnabled(context: Context): Boolean = ensureAutoUpdateLoaded(context).value
+
+    fun setAutoUpdateEnabled(context: Context, enabled: Boolean) {
+        ensureAutoUpdateLoaded(context)
+        context.applicationContext
+            .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_AUTO_UPDATE_ENABLED, enabled)
+            .apply()
+        autoUpdateState.value = enabled
+    }
 
     private val downloadMutex = Mutex()
     private val client = OkHttpClient.Builder()

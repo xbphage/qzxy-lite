@@ -22,6 +22,6 @@ class DisclaimerStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "qzxy_lite_legal"
         private const val KEY_ACCEPTED = "disclaimer_accepted_v1"
-        const val REQUIRED_CONFIRM_TEXT = "我同意以上内容并清楚本软件可能无法正常运行"
+        const val REQUIRED_CONFIRM_TEXT = "我同意以上内容知晓软件存在不稳定性并保证不在国内平台传播本软件"
     }
 }

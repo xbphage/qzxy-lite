@@ -55,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.qzxy.lite.appContainer
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.UiState
+import com.qzxy.lite.ui.common.verticalScrollbar
 import com.qzxy.lite.ui.theme.LocalQzColors
 import com.qzxy.lite.ui.theme.SteamWaves
 
@@ -112,6 +113,7 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
             }
 
             // —— 表单层：向上叠进英雄区 28dp，圆角起始 ——
+            val formScroll = rememberScrollState()
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -119,7 +121,8 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                     .offset(y = (-28).dp)
                     .clip(MaterialTheme.shapes.extraLarge)
                     .background(MaterialTheme.colorScheme.surface)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScrollbar(formScroll)
+                    .verticalScroll(formScroll)
                     .padding(horizontal = 24.dp)
                     .padding(top = 30.dp, bottom = 20.dp),
             ) {

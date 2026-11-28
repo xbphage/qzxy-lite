@@ -26,9 +26,11 @@ import androidx.compose.material.icons.rounded.SystemUpdateAlt
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -47,6 +49,8 @@ import com.qzxy.lite.appContainer
 import com.qzxy.lite.ui.common.DisclaimerDialog
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.ExpandableRawCard
+import com.qzxy.lite.ui.common.verticalScrollbar
+import com.qzxy.lite.update.UpdateManager
 
 /**
  * 我的：个人信息头 + 检查更新（版本号 + 单按钮）+ 退款进度 + 退出登录。
@@ -68,12 +72,16 @@ fun MineScreen(
     val state by vm.state.collectAsState()
     var diagOpen by remember { mutableStateOf(false) }
     var disclaimerOpen by remember { mutableStateOf(false) }
+    val autoUpdateEnabled by UpdateManager.autoUpdateEnabledFlow(context).collectAsState()
+
+    val pageScroll = rememberScrollState()
 
     Column(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState()),
+            .verticalScrollbar(pageScroll)
+            .verticalScroll(pageScroll),
     ) {
         // —— 个人信息头：单次 statusBarsPadding ——
         Row(
@@ -129,37 +137,65 @@ fun MineScreen(
                 ) { CircularProgressIndicator() }
             }
 
-            // —— 检查更新：版本号 + 单按钮，点击即检查 ——
+            // —— 应用更新：手动检查 + 自动检查/静默下载开关 ——
             Card(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onCheckUpdate),
+                Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
-                Row(
-                    Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Icon(
-                        Icons.Rounded.SystemUpdateAlt,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text("检查更新", style = MaterialTheme.typography.titleSmall)
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onCheckUpdate)
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.SystemUpdateAlt,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text("检查更新", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "当前版本 v${BuildConfig.VERSION_NAME}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Text(
-                            "当前版本 v${BuildConfig.VERSION_NAME}",
-                            style = MaterialTheme.typography.bodySmall,
+                            "›",
+                            style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Text(
-                        "›",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                     )
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { UpdateManager.setAutoUpdateEnabled(context, !autoUpdateEnabled) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("自动检查并下载更新", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (autoUpdateEnabled) "启动时自动检查新版并静默下载" else "已关闭自动更新（仍可点击上方手动检查）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = autoUpdateEnabled,
+                            onCheckedChange = { UpdateManager.setAutoUpdateEnabled(context, it) },
+                        )
+                    }
                 }
             }
 

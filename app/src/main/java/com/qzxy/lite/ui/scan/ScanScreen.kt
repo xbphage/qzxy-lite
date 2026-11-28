@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -56,6 +57,7 @@ import com.qzxy.lite.appContainer
 import com.qzxy.lite.ble.BleSighting
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.QzEmptyState
+import com.qzxy.lite.ui.common.lazyVerticalScrollbar
 import com.qzxy.lite.ui.theme.TabularNumbers
 import com.qzxy.lite.ui.theme.rememberMotionAllowed
 
@@ -151,11 +153,14 @@ fun ScanScreen(
                 )
             }
 
+            val scanListState = rememberLazyListState()
             LazyColumn(
-                Modifier
+                state = scanListState,
+                modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 20.dp),
+                    .padding(horizontal = 20.dp)
+                    .lazyVerticalScrollbar(scanListState),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
             ) {

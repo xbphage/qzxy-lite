@@ -46,6 +46,7 @@ import com.qzxy.lite.appContainer
 import com.qzxy.lite.data.repository.PayChannel
 import com.qzxy.lite.ui.common.ErrorNotice
 import com.qzxy.lite.ui.common.SoftNotice
+import com.qzxy.lite.ui.common.verticalScrollbar
 import com.qzxy.lite.ui.theme.LocalQzColors
 import com.qzxy.lite.ui.theme.SteamWaves
 
@@ -90,6 +91,7 @@ fun WalletScreen(onBack: () -> Unit) {
                 Text("钱包", style = MaterialTheme.typography.titleLarge)
             }
 
+            val walletScroll = rememberScrollState()
             PullToRefreshBox(
                 isRefreshing = state.refreshing,
                 onRefresh = { vm.refresh() },
@@ -100,7 +102,8 @@ fun WalletScreen(onBack: () -> Unit) {
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
+                        .verticalScrollbar(walletScroll)
+                        .verticalScroll(walletScroll)
                         .padding(horizontal = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
